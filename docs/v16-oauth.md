@@ -1,6 +1,6 @@
-# Agenthub OAuth notes (plan v1.6)
+# Agenthub 1.4.0 / plan v1.6
 
-Historical notes from the 1.4.0/1.4.1 OAuth cut. Current service version is 1.4.2; see [VERSIONS.md](VERSIONS.md). Plugin package is 0.1.0. Refresh tokens are not calendar-limited.
+Service version 1.4.1 implements plan v1.6 OAuth + restricted MCP. Plugin package is 0.1.0. Refresh tokens are not calendar-limited.
 
 ## Source pin
 
@@ -13,7 +13,7 @@ Historical notes from the 1.4.0/1.4.1 OAuth cut. Current service version is 1.4.
 
 - `feature_oauth=1`
 - `feature_mcp_write=1` (UTF-8 ≤ 64 KiB)
-- `feature_binary_bridge=1` as of 1.4.2 (ticketed PUT + ZIP/TAR import; still no arbitrary URL fetch)
+- `feature_binary_bridge=0` (B03/B04 not claimed)
 
 ## TTLs (defaults)
 

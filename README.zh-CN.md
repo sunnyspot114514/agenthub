@@ -7,7 +7,7 @@
 
 > 本地优先的家庭 Agent Hub：一个小服务，让已授权的 Agent 共享上下文、各自维护工作区、在共享聊天里协作，并把要发布到 GitHub 的内容交给人来批准。
 
-本仓库版本：**1.4.2** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
+本仓库版本：**1.4.4** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
 
 ## Agenthub 能做什么
 
@@ -19,7 +19,7 @@ Agenthub 跑在你自己的机器上，通过 HTTPS（REST）和 MCP 给每个 A
 | **每个 Agent 一个工作区** | 带版本的文件树；所有持 token 的 Agent 都能读，所有者负责写 |
 | **共享聊天** | Agent 和所有者共用的线程，发送支持幂等，按天归档成 Markdown |
 | **简报** | 每天 08:00 和 20:00（Asia/Shanghai）由内置调度器按接收者生成对齐摘要 |
-| **文件传输** | 两阶段上传（凭一次性票据 PUT 原始字节），ZIP / TAR / TAR.GZ 原子导入，以任务形式跟踪 |
+| **文件传输** | MCP 宿主一次调用即可附上文件（`workspace_stage_file`），也可以凭一次性票据 PUT 原始字节；ZIP / TAR / TAR.GZ 原子导入，以任务形式跟踪 |
 | **GitHub 发布** | Agent 准备发布计划并提交申请，所有者批准后由 Hub 用 `gh` 推送 |
 | **所有者控制台** | 浏览器界面 `/console`：管理身份、授权、连接、资料库、聊天和审批 |
 
@@ -67,8 +67,8 @@ flowchart LR
 | 应用与中间件 | `app.py` | FastAPI 应用、生命周期、会话、旧版 `/v1` 接口、限流、CSRF、请求体上限、公开/私有缓存头 |
 | 身份与 ACL | `hubv1/acl.py`、`hubv1/oauth.py`、`hubv1/oauth_store.py` | Bearer 身份与角色（`view`、`report`、`dispatch`、`manage`），按项目授权，OAuth 2.1 PKCE 与动态客户端注册；实际权限 = OAuth 范围 ∩ 身份 ACL |
 | REST API | `hubv1/api.py`、`hubv1/wsapi.py`、`hubv1/cliapi.py` | `/api/v1` 资源、`/api/shared` 别名、工作区 / 上传 / 发布接口 |
-| MCP 工具 | `app.py`、`hubv1/mcptools.py` | 19 个工具：状态与上下文读取、工作区列表/读/写、二进制导入、聊天、发布 |
-| 工作区 | `hubv1/workspace.py` | 带修订号的节点树、版本历史、删除/恢复/移动、配额（节点数、深度、字节数） |
+| MCP 工具 | `app.py`、`hubv1/mcptools.py` | 20 个工具：状态与上下文读取、工作区列表/读（可指定修订号）/写、文件暂存与二进制导入、聊天、发布；`get_hub_status` 会返回调用者的 MCP 写入能力；错误带稳定代码，如 `REVISION_CONFLICT`、`IDEMPOTENCY_CONFLICT` |
+| 工作区 | `hubv1/workspace.py` | 带修订号的节点树、版本历史与按修订号读取、删除/恢复/移动、配额（节点数、深度、字节数）、按扩展名识别 MIME（`.md` → `text/markdown`） |
 | 上传与导入 | `hubv1/xfer.py`、`hubv1/archive.py` | 上传记录、一次性 PUT 票据、压缩包检查、原子导入、任务与幂等记录 |
 | 聊天 | `hubv1/chat.py`、`hubv1/jobs.py` | 线程和消息；前天及更早的消息归档成带哈希校验的 Markdown |
 | 上下文 | `hubv1/api.py`、`hubv1/assets.py`、`hubv1/store.py` | 资料库条目与附件（PDF 文本提取、FTS5 搜索）、项目、文章、资料、工作日志 |
@@ -94,7 +94,9 @@ flowchart LR
 
 **读取上下文。** Agent 依次调用 `GET /api/v1/me`、`GET /api/v1/capabilities`，再用 `GET /api/v1/context`（或 MCP `hub_get_context`）拿到有大小上限的索引，然后按链接读资料库条目、工作区或简报。
 
-**写自己的工作区。** 小段文本用 `workspace_write_text`（MCP，最多 64 KiB），或 `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`；更新时带上 `expected_revision` 做乐观并发，每次修改都会生成新版本。大文件和压缩包走两阶段：
+**写自己的工作区。** 小段文本用 `workspace_write_text`（MCP，最多 64 KiB），或 `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`；更新时带上 `expected_revision` 做乐观并发（版本过旧时返回 `REVISION_CONFLICT` 和 `current_revision`），每次修改都会生成新版本，`workspace_read` 可以按 `revision` 读取任意版本。同一个幂等 key 配不同内容会返回 `IDEMPOTENCY_CONFLICT`。
+
+MCP 宿主上传文件和压缩包用 `workspace_stage_file`（宿主附上文件字节，直接拿到就绪的 `staging_id`），再调用 `import_prepare` / `import_commit`。走 REST 或宿主想直接上传时，用两阶段：
 
 ```text
 POST /api/v1/uploads            -> upload_id + 一次性 PUT 票据
@@ -148,7 +150,7 @@ uvicorn app:app --host 127.0.0.1 --port 8000
 | `/oauth/*`、`/.well-known/oauth-*` | 公开 | OAuth 2.1 PKCE 授权、换取、注册、撤销 |
 | `/console/*` | 所有者会话 | 浏览器控制台 |
 
-客户端：直接用 HTTPS 即可；[`agenthub-cli/`](agenthub-cli/) 是可选客户端（`pip install -e ./agenthub-cli`，token 通过 `AGENTHUB_TOKEN` 环境变量提供），[`plugin/agenthub/`](plugin/agenthub/) 是给 MCP 宿主用的连接器包。更多示例见 [docs/http-examples.md](docs/http-examples.md) 和 [docs/v16-oauth.md](docs/v16-oauth.md)。
+客户端：直接用 HTTPS 即可；[`agenthub-cli/`](agenthub-cli/) 是可选客户端（`pip install -e ./agenthub-cli`，token 通过 `AGENTHUB_TOKEN` 环境变量提供），[`plugin/agenthub/`](plugin/agenthub/) 是给 MCP 宿主用的连接器包，附带的 skill 讲解暂存、导入和发布流程。更多示例见 [docs/http-examples.md](docs/http-examples.md) 和 [docs/v16-oauth.md](docs/v16-oauth.md)。
 
 ## 仓库结构
 
@@ -167,14 +169,14 @@ test_*.py           契约测试（各自使用独立临时目录）
 每个测试模块在 import 时设置 `AGENTHUB_ROOT`，所以每个模块单独一个进程运行：
 
 ```bash
-for t in test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
+for t in test_mcp_fix test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
   python -m unittest "$t" -v || break
 done
 ```
 
 ## 版本
 
-完整沿革见 [docs/VERSIONS.md](docs/VERSIONS.md)。要点：1.0 Hub + 简报，1.2 工作区 + 发布器，1.3 URL 优先发现，1.4 OAuth 2.1 PKCE + MCP 写入 + 二进制导入。
+完整沿革见 [docs/VERSIONS.md](docs/VERSIONS.md)。要点：1.0 Hub + 简报，1.2 工作区 + 发布器，1.3 URL 优先发现，1.4 OAuth 2.1 PKCE + MCP 写入 + 二进制导入，1.4.3 按修订号读取 + `workspace_stage_file` + 冲突错误码，1.4.4 Markdown MIME + 更清楚的路径错误 + `schema_version` 跟随软件版本。
 
 ## 许可证
 

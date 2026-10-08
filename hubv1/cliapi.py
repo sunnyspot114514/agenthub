@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 from urllib.parse import quote
 
 from hubv1.acl import Access
+from hubv1.version import APP_VERSION
 from hubv1.flags import flag_int
 from hubv1.store import WORKSPACE_MAX_FILE_BYTES, connect
 from hubv1 import workspace as ws
@@ -216,7 +217,7 @@ def attach(router, shared_router, *, require_api, envelope):
         except Exception as exc:
             return _http(request, exc)
         payload = {
-            "schema_version": "1.3.0",
+            "schema_version": APP_VERSION,
             "request_id": getattr(request.state, "request_id", ""),
             "data": {"job_id": info["job_id"], "state": info["state"], "result": info.get("result")},
             "cursor": None,

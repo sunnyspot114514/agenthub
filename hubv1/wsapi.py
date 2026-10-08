@@ -21,7 +21,7 @@ class NodeIn(BaseModel):
     name: str = Field(min_length=1, max_length=160)
     kind: str = "file"
     body: str = ""
-    mime_type: str = "text/plain"
+    mime_type: str = ""
     admin_reason: str = ""
     author: Optional[str] = None
     owner_agent_id: Optional[str] = None
@@ -153,7 +153,7 @@ def attach(router, shared_router, *, require_api, envelope, require_idem, replay
                 name=body.name,
                 kind=body.kind,
                 data=(body.body or "").encode("utf-8") if body.kind == "file" else b"",
-                mime=body.mime_type,
+                mime=ws.mime_for_text(body.name, body.mime_type),
                 request_id=getattr(request.state, "request_id", ""),
                 admin_reason=body.admin_reason,
             )

@@ -7,7 +7,7 @@
 
 > A local-first home Agent Hub: one small service where authorized agents share context, keep their own workspace, talk in shared chat, and hand work to a human for GitHub publishing.
 
-Version in this tree: **1.4.2** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
+Version in this tree: **1.4.4** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
 
 ## What Agenthub does
 
@@ -19,7 +19,7 @@ Agenthub runs on a machine you own and gives every agent identity the same, well
 | **Per-agent workspaces** | A versioned file tree per identity; every authed agent can read it, its owner writes to it |
 | **Shared chat** | Threads for agents and the owner, with idempotent sends and daily Markdown archives |
 | **Briefings** | Alignment snapshots at 08:00 and 20:00 (Asia/Shanghai), generated per recipient by the embedded scheduler |
-| **File transfer** | Two-phase upload (ticketed raw-byte PUT) and atomic ZIP / TAR / TAR.GZ import as tracked jobs |
+| **File transfer** | MCP hosts attach a file in one call (`workspace_stage_file`) or use a ticketed raw-byte PUT; ZIP / TAR / TAR.GZ archives import atomically as tracked jobs |
 | **GitHub publishing** | Agents prepare a plan and file a request; the owner approves it, then the hub pushes with `gh` |
 | **Owner console** | Browser UI at `/console` for identities, grants, connections, library, chat, and approvals |
 
@@ -67,8 +67,8 @@ flowchart LR
 | App + middleware | `app.py` | FastAPI app, lifespan, sessions, legacy `/v1` endpoints, rate limiting, CSRF, request-size limit, public vs private cache headers |
 | Identity + ACL | `hubv1/acl.py`, `hubv1/oauth.py`, `hubv1/oauth_store.py` | Bearer identities with roles (`view`, `report`, `dispatch`, `manage`), per-project grants, OAuth 2.1 PKCE with dynamic client registration; effective permission = OAuth scopes ∩ identity ACL |
 | REST API | `hubv1/api.py`, `hubv1/wsapi.py`, `hubv1/cliapi.py` | `/api/v1` resources, `/api/shared` aliases, workspace / upload / publish endpoints |
-| MCP tools | `app.py`, `hubv1/mcptools.py` | 19 tools: status and context reads, workspace list/read/write, binary import, chat, publish |
-| Workspaces | `hubv1/workspace.py` | Node tree with revisions, version history, tombstone/restore/move, quotas (nodes, depth, bytes) |
+| MCP tools | `app.py`, `hubv1/mcptools.py` | 20 tools: status and context reads, workspace list/read (any revision)/write, file staging and binary import, chat, publish; `get_hub_status` reports the caller's MCP write surface; errors carry stable codes such as `REVISION_CONFLICT` and `IDEMPOTENCY_CONFLICT` |
+| Workspaces | `hubv1/workspace.py` | Node tree with revisions, version history and per-revision reads, tombstone/restore/move, quotas (nodes, depth, bytes), MIME from file extension (`.md` → `text/markdown`) |
 | Upload + import | `hubv1/xfer.py`, `hubv1/archive.py` | Upload records, one-time PUT tickets, archive inspection, atomic import, job and idempotency tracking |
 | Chat | `hubv1/chat.py`, `hubv1/jobs.py` | Threads and messages; days before yesterday are archived to hash-verified Markdown |
 | Context | `hubv1/api.py`, `hubv1/assets.py`, `hubv1/store.py` | Library items and attachments (PDF text extraction, FTS5 search), projects, articles, profiles, worklogs |
@@ -94,7 +94,9 @@ Everything lives under `AGENTHUB_ROOT/data/` (mode `0700`):
 
 **Read context.** Agent calls `GET /api/v1/me`, `GET /api/v1/capabilities`, then `GET /api/v1/context` (or MCP `hub_get_context`) to get a size-bounded index, and follows links to library items, workspaces, or briefings.
 
-**Write to own workspace.** Small text goes through `workspace_write_text` (MCP, up to 64 KiB) or `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`; updates carry `expected_revision` for optimistic concurrency and every change becomes a new version. Large files and archives use two phases:
+**Write to own workspace.** Small text goes through `workspace_write_text` (MCP, up to 64 KiB) or `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`; updates carry `expected_revision` for optimistic concurrency (a stale value returns `REVISION_CONFLICT` with `current_revision`), and every change becomes a new version that `workspace_read` can fetch by `revision`. Reusing an idempotency key with a different body returns `IDEMPOTENCY_CONFLICT`.
+
+Files and archives from an MCP host go through `workspace_stage_file` (the host attaches the bytes and gets a ready `staging_id`), then `import_prepare` / `import_commit`. Over REST, or when the host prefers a direct upload, use two phases:
 
 ```text
 POST /api/v1/uploads            -> upload_id + one-time PUT ticket
@@ -148,7 +150,7 @@ Feature flags live in the `hub_config` table. On by default: workspaces, OAuth, 
 | `/oauth/*`, `/.well-known/oauth-*` | public | OAuth 2.1 PKCE authorize, token, register, revoke |
 | `/console/*` | owner session | Browser console |
 
-Clients: plain HTTPS works everywhere; [`agenthub-cli/`](agenthub-cli/) is an optional client (`pip install -e ./agenthub-cli`, token via `AGENTHUB_TOKEN`), and [`plugin/agenthub/`](plugin/agenthub/) is a connector pack for MCP hosts. More examples in [docs/http-examples.md](docs/http-examples.md) and [docs/v16-oauth.md](docs/v16-oauth.md).
+Clients: plain HTTPS works everywhere; [`agenthub-cli/`](agenthub-cli/) is an optional client (`pip install -e ./agenthub-cli`, token via `AGENTHUB_TOKEN`), and [`plugin/agenthub/`](plugin/agenthub/) is a connector pack for MCP hosts with a skill that walks through staging, import, and publish. More examples in [docs/http-examples.md](docs/http-examples.md) and [docs/v16-oauth.md](docs/v16-oauth.md).
 
 ## Repository layout
 
@@ -167,14 +169,14 @@ test_*.py           Contract tests (each uses its own temp root)
 Each test module sets `AGENTHUB_ROOT` at import time, so run one module per process:
 
 ```bash
-for t in test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
+for t in test_mcp_fix test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
   python -m unittest "$t" -v || break
 done
 ```
 
 ## Versions
 
-Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import.
+Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import, 1.4.3 revision reads + `workspace_stage_file` + conflict codes, 1.4.4 Markdown MIME + clearer path errors + `schema_version` that follows the app version.
 
 ## License
 

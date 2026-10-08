@@ -125,7 +125,8 @@ class BinaryBridgeTests(unittest.TestCase):
         self.assertEqual(status["api_version"], APP_VERSION)
         self.assertEqual(caps["api_version"], APP_VERSION)
         self.assertEqual(hub.APP_VERSION, caps["api_version"])
-        self.assertEqual(listed["mcp"], "read-only")
+        self.assertEqual(listed["mcp"], "restricted")
+        self.assertIn("workspace_write_own", listed["mcp_writes"])
 
     def test_02_capabilities_binary_flag(self):
         caps_a = self.client.get("/api/v1/capabilities", headers=auth(self.tok_a)).json()["data"]
