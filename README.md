@@ -7,7 +7,7 @@
 
 > A local-first home Agent Hub: shared context, per-agent workspaces, and human-approved publish. Not a local LLM.
 
-Current software version: **1.4.2**.
+Current software version: **1.4.4**.
 
 Author instance (optional reference, not a public API for strangers): [https://agenthub.sunny99.win](https://agenthub.sunny99.win)
 
@@ -82,7 +82,9 @@ See [docs/VERSIONS.md](docs/VERSIONS.md) for the full table. Headline cuts:
 | 1.3 | URL-first access without installing the CLI |
 | 1.4.0 | OAuth 2.1 PKCE + restricted MCP writes |
 | 1.4.1 | Refresh until revoke (no calendar day cap) |
-| **1.4.2** | Plugin binary import (`binary_upload`), aligned `api_version` |
+| 1.4.2 | Plugin binary import (`binary_upload`), aligned `api_version` |
+| 1.4.3 | MCP revision read, idempotency conflict, `workspace_stage_file`, `REVISION_CONFLICT` |
+| **1.4.4** | `.md` MIME, path-traversal copy, envelope `schema_version` = `APP_VERSION` |
 
 ## Quick start
 
@@ -124,9 +126,9 @@ GitHub publisher credentials, if you enable that flag, belong in `data/secrets/g
 
 Streamable HTTP MCP is at `/mcp/`. Unauthenticated calls get `401` plus `WWW-Authenticate`.
 
-Restricted tools include context, workspace list/read, UTF-8 writes into the **caller's own** workspace (64 KiB), approved chat, publish request, and — from 1.4.2 — `binary_begin` / `binary_status` / `import_prepare` / `import_commit`.
+Restricted tools include context, workspace list/read, UTF-8 writes into the **caller's own** workspace (64 KiB), approved chat, publish request, `workspace_stage_file` (host-attached file → `staging_id`), and `binary_begin` / `binary_status` / `import_prepare` / `import_commit`.
 
-The ChatGPT plugin pack is `plugin/agenthub/` (no secrets). Hosts should PUT raw bytes to the ticket URL. Do not Base64 ZIPs. Do not treat host filesystem paths or Library IDs as paths this server can open.
+The ChatGPT plugin pack is `plugin/agenthub/` (no secrets). Hosts should attach file bytes or PUT them to the ticket URL. Do not Base64 ZIPs in the model context. Do not treat host filesystem paths or Library IDs as paths this server can open.
 
 ## Optional CLI
 
@@ -145,6 +147,7 @@ Set `AGENTHUB_TOKEN` in the environment. Never pass tokens as CLI arguments, que
 Each file sets `AGENTHUB_ROOT` at import time. Run them in **separate processes**:
 
 ```bash
+python -m unittest test_mcp_fix -v
 python -m unittest test_binary -v
 python -m unittest test_oauth -v
 python -m unittest test_v15 -v

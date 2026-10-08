@@ -7,7 +7,7 @@
 
 > 本地优先的家庭 Agent Hub：共享上下文、每身份工作区、人工批准后才发布。不是本地大模型。
 
-当前软件版本：**1.4.2**。
+当前软件版本：**1.4.4**。
 
 作者实例（仅作参考，不是对陌生人开放的公共 API）：[https://agenthub.sunny99.win](https://agenthub.sunny99.win)
 
@@ -82,7 +82,9 @@ flowchart TD
 | 1.3 | URL 优先，不必安装 CLI |
 | 1.4.0 | OAuth 2.1 PKCE + 受限 MCP 写入 |
 | 1.4.1 | 刷新令牌直到撤销（无按天日历上限） |
-| **1.4.2** | 插件大文件导入（`binary_upload`），`api_version` 与 Hub 状态对齐 |
+| 1.4.2 | 插件大文件导入（`binary_upload`），`api_version` 与 Hub 状态对齐 |
+| 1.4.3 | MCP 按版本读取、幂等冲突、`workspace_stage_file`、`REVISION_CONFLICT` |
+| **1.4.4** | `.md` MIME、穿越文案、信封 `schema_version` 与 `APP_VERSION` 对齐 |
 
 ## 快速开始
 
@@ -124,9 +126,9 @@ systemd 示例：[contrib/agenthub.service.example](contrib/agenthub.service.exa
 
 Streamable HTTP MCP 在 `/mcp/`。未认证请求返回 `401` 和 `WWW-Authenticate`。
 
-受限工具包括上下文、工作区列表/读取、向**调用者自己的**工作区写 UTF-8 文本（64 KiB）、已授权聊天、发布申请，以及 1.4.2 起的 `binary_begin` / `binary_status` / `import_prepare` / `import_commit`。
+受限工具包括上下文、工作区列表/读取、向**调用者自己的**工作区写 UTF-8 文本（64 KiB）、已授权聊天、发布申请、`workspace_stage_file`（宿主附文件 → `staging_id`），以及 `binary_begin` / `binary_status` / `import_prepare` / `import_commit`。
 
-ChatGPT 插件包在 `plugin/agenthub/`（不含密钥）。宿主应把原始字节 PUT 到一次性上传地址。不要把 ZIP 编成 Base64。不要把宿主本地路径或 Library ID 当成这台服务器能打开的路径。
+ChatGPT 插件包在 `plugin/agenthub/`（不含密钥）。宿主应附上文件字节，或 PUT 到一次性上传地址。不要把 ZIP 编成 Base64 塞进模型上下文。不要把宿主本地路径或 Library ID 当成这台服务器能打开的路径。
 
 ## 可选 CLI
 
@@ -145,6 +147,7 @@ agenthub whoami --json
 每个测试文件在 import 时设置 `AGENTHUB_ROOT`。必须**分进程**跑：
 
 ```bash
+python -m unittest test_mcp_fix -v
 python -m unittest test_binary -v
 python -m unittest test_oauth -v
 python -m unittest test_v15 -v

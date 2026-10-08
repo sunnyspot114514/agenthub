@@ -1,6 +1,7 @@
 """Restricted MCP adapters. Call the same workspace/chat/publish services as REST."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from pathlib import Path
@@ -20,9 +21,35 @@ CONTEXT_MAX = 16 * 1024
 
 
 class ToolFail(Exception):
-    def __init__(self, code: str, message: str = ""):
+    CODE_ALIAS = {
+        "revision_conflict": "REVISION_CONFLICT",
+        "revision_not_found": "REVISION_NOT_FOUND",
+        "idempotency_conflict": "IDEMPOTENCY_CONFLICT",
+        "not_found": "NOT_FOUND",
+        "invalid": "INVALID_ARGUMENT",
+        "forbidden": "PERMISSION_DENIED",
+        "conflict": "CONFLICT",
+        "too_large": "TOO_LARGE",
+        "unavailable": "UNAVAILABLE",
+    }
+
+    def __init__(self, code: str, message: str = "", *, details: Optional[dict[str, Any]] = None):
         self.code = code
+        self.details = details or {}
         super().__init__(message or code)
+
+    def public_code(self) -> str:
+        return self.CODE_ALIAS.get(self.code, (self.code or "ERROR").upper())
+
+    def as_text(self) -> str:
+        parts = [self.public_code()]
+        msg = str(self)
+        if msg and msg.upper() not in {self.code.upper(), self.public_code()}:
+            parts.append(msg)
+        extra = " ".join(f"{k}={v}" for k, v in self.details.items() if v is not None)
+        if extra:
+            parts.append(extra)
+        return ": ".join(parts) if len(parts) > 1 else parts[0]
 
 
 def _acc(p):
@@ -42,6 +69,43 @@ def _own_workspace(acc):
     if not mine:
         raise ToolFail("not_found", "workspace")
     return mine
+
+
+def _op_hash(*parts: Any) -> str:
+    blob = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return sha256_bytes(blob)
+
+
+def _replay_or_conflict(acc, key: str, req_hash: str) -> Optional[dict[str, Any]]:
+    if not key:
+        return None
+    prev = xfer.get_op(acc, key)
+    if not prev:
+        return None
+    if (prev.get("request_hash") or "") != req_hash:
+        raise ToolFail(
+            "idempotency_conflict",
+            "IDEMPOTENCY_CONFLICT",
+            details={"idempotency_key": key},
+        )
+    return _replay(prev)
+
+
+def mcp_surface(p) -> dict[str, Any]:
+    acc = _acc(p)
+    writes: list[str] = []
+    if flag("feature_mcp_write") and acc.has_scope("workspace:write:own"):
+        writes.append("workspace_write_own")
+        if xfer.binary_enabled():
+            writes.append("binary_upload")
+    if flag("feature_mcp_write") and acc.has_scope("chat:write"):
+        writes.append("chat_write")
+    if acc.has_scope("publish:request"):
+        writes.append("publish_request")
+    return {
+        "mcp": "restricted" if writes else "read-only",
+        "mcp_writes": writes,
+    }
 
 
 def hub_get_context(p, *, section: str = "index", cursor: str = "", limit: int = 20, max_bytes: int = CONTEXT_MAX) -> dict[str, Any]:
@@ -118,7 +182,17 @@ def workspace_read(p, *, file_id: str, revision: int = 0, max_bytes: int = WRITE
     w = ws.get_workspace(node["workspace_id"])
     if not w or not ws.can_read_workspace(acc, w):
         raise ToolFail("not_found")
-    data, mime, name = ws.file_payload(file_id)
+    current = int(node.get("revision") or 0)
+    try:
+        data, mime, name, served = ws.file_at_revision(file_id, revision=int(revision or 0))
+    except KeyError as exc:
+        if str(exc) == "revision" or "revision" in str(exc):
+            raise ToolFail(
+                "revision_not_found",
+                "REVISION_NOT_FOUND",
+                details={"requested_revision": int(revision or 0), "current_revision": current},
+            ) from exc
+        raise ToolFail("not_found") from exc
     max_bytes = max(1, min(int(max_bytes or WRITE_TEXT_MAX), WRITE_TEXT_MAX))
     truncated = len(data) > max_bytes
     chunk = data[:max_bytes]
@@ -134,7 +208,8 @@ def workspace_read(p, *, file_id: str, revision: int = 0, max_bytes: int = WRITE
         "mime_type": mime,
         "size": len(data),
         "sha256": hashlib.sha256(data).hexdigest(),
-        "revision": node.get("revision"),
+        "revision": served,
+        "current_revision": current,
         "truncated": truncated,
         "text": text,
         "embedded": text is not None,
@@ -163,7 +238,10 @@ def workspace_write_text(
     mine = _own_workspace(acc)
     if not ws.can_write_workspace(acc, mine):
         raise ToolFail("forbidden")
-    parts = ws.parse_relpath(relative_path)
+    try:
+        parts = ws.parse_relpath(relative_path)
+    except ValueError as exc:
+        raise ToolFail("invalid", str(exc)) from exc
     parent_id = mine["root_node_id"]
     for part in parts[:-1]:
         kids = {c["name"]: c for c in ws.list_children(mine["workspace_id"], parent_id)}
@@ -180,18 +258,29 @@ def workspace_write_text(
         if child["name"] == name and child["kind"] == "file":
             existing = child
             break
-    req_hash = sha256_bytes(raw + relative_path.encode())
-    if idempotency_key:
-        prev = xfer.get_op(acc, idempotency_key)
-        if prev:
-            return _replay(prev)
+    req_hash = _op_hash("mcp.write_text", relative_path, text)
+    replayed = _replay_or_conflict(acc, idempotency_key, req_hash)
+    if replayed is not None:
+        return replayed
+    mime = ws.mime_for_text(name)
     if existing:
         if expected_revision is None:
-            raise ToolFail("conflict", "expected_revision required")
+            raise ToolFail("invalid", "expected_revision required", details={"current_revision": int(existing.get("revision") or 0)})
         try:
-            info = ws.update_file(acc, existing["node_id"], expected_revision=int(expected_revision), data=raw, mime="text/plain")
+            info = ws.update_file(acc, existing["node_id"], expected_revision=int(expected_revision), data=raw, mime=mime)
+        except ws.RevisionConflict as exc:
+            raise ToolFail(
+                "revision_conflict",
+                "REVISION_CONFLICT",
+                details={"current_revision": exc.current, "expected_revision": exc.expected},
+            ) from exc
         except RuntimeError:
-            raise ToolFail("conflict")
+            cur = ws.get_node(existing["node_id"])
+            raise ToolFail(
+                "revision_conflict",
+                "REVISION_CONFLICT",
+                details={"current_revision": int((cur or {}).get("revision") or 0), "expected_revision": int(expected_revision)},
+            )
     else:
         info = ws.create_node(
             acc,
@@ -200,7 +289,7 @@ def workspace_write_text(
             name=name,
             kind="file",
             data=raw,
-            mime="text/plain",
+            mime=mime,
         )
     out = {
         "file_id": info.get("node_id"),
@@ -208,6 +297,7 @@ def workspace_write_text(
         "sha256": hashlib.sha256(raw).hexdigest(),
         "bytes": len(raw),
         "path": relative_path,
+        "mime_type": mime,
     }
     if idempotency_key:
         xfer.remember_op(acc, idempotency_key, "mcp.write_text", relative_path, req_hash, 200, out)
@@ -251,6 +341,56 @@ def binary_begin(p, *, name: str, bytes: int, sha256: str = "", purpose: str = "
         "upload_ticket": ticket,
         "note": "Host runtime should PUT raw bytes to put_url. Same OAuth Bearer also works. Do not paste the ticket into chat or workspace files. Do not Base64 the ZIP. Do not open host filesystem paths or fetch arbitrary URLs.",
     }
+
+
+def binary_stage(
+    p,
+    *,
+    name: str,
+    content_b64: str = "",
+    declared_bytes: int = 0,
+    sha256: str = "",
+    purpose: str = "archive",
+) -> dict[str, Any]:
+    """Accept host-attached file bytes, or open a PUT ticket if content is omitted."""
+    acc = _acc(p)
+    _need_binary_write(acc)
+    filename = (name or "").strip()
+    if not filename:
+        raise ToolFail("invalid", "name required")
+    blob = (content_b64 or "").strip()
+    if blob:
+        try:
+            raw = base64.b64decode(blob, validate=False)
+        except Exception as exc:
+            raise ToolFail("invalid", "content_b64") from exc
+        if not raw:
+            raise ToolFail("invalid", "empty file")
+        if declared_bytes and int(declared_bytes) != len(raw):
+            raise ToolFail("invalid", "size mismatch", details={"declared_bytes": int(declared_bytes), "bytes": len(raw)})
+        try:
+            info = xfer.create_upload(acc, name=filename, nbytes=len(raw), sha256=sha256 or "", purpose=purpose or "archive")
+            put = xfer.put_upload_bytes(acc, info["upload_id"], raw)
+            xfer.consume_upload_tickets(info["upload_id"])
+        except PermissionError:
+            raise ToolFail("forbidden")
+        except OverflowError as exc:
+            raise ToolFail("too_large", str(exc)[:200])
+        except ValueError as exc:
+            raise ToolFail("invalid", str(exc)[:200])
+        return {
+            "staging_id": info["upload_id"],
+            "upload_id": info["upload_id"],
+            "state": put.get("state") or "ready",
+            "bytes": len(raw),
+            "sha256": put.get("sha256") or hashlib.sha256(raw).hexdigest(),
+            "name": filename,
+            "note": "Staging is ready. Call import_prepare with this staging_id. Do not paste file bytes into chat.",
+        }
+    nbytes = int(declared_bytes or 0)
+    if nbytes <= 0:
+        raise ToolFail("invalid", "content_b64 or declared_bytes required")
+    return binary_begin(p, name=filename, bytes=nbytes, sha256=sha256, purpose=purpose)
 
 
 def binary_status(p, *, staging_id: str) -> dict[str, Any]:
@@ -300,10 +440,10 @@ def import_commit(
     _need_binary_write(acc)
     if not preview_id or not manifest_hash:
         raise ToolFail("invalid", "preview_id and manifest_hash required")
-    if idempotency_key:
-        prev = xfer.get_op(acc, idempotency_key)
-        if prev:
-            return _replay(prev)
+    req_hash = _op_hash("mcp.import_commit", preview_id, manifest_hash, dest, conflict)
+    replayed = _replay_or_conflict(acc, idempotency_key, req_hash)
+    if replayed is not None:
+        return replayed
     mine = _own_workspace(acc)
     try:
         info = xfer.run_import(
@@ -324,7 +464,7 @@ def import_commit(
     except (OverflowError, ValueError) as exc:
         raise ToolFail("invalid", str(exc)[:200])
     if idempotency_key:
-        xfer.remember_op(acc, idempotency_key, "mcp.import_commit", preview_id, manifest_hash, 202, info)
+        xfer.remember_op(acc, idempotency_key, "mcp.import_commit", preview_id, req_hash, 202, info)
     return info
 
 
@@ -380,10 +520,10 @@ def chat_send(p, *, channel: str, text: str, idempotency_key: str = "") -> dict[
         raise ToolFail("forbidden", "chat:write required")
     if not text or len(text.encode("utf-8")) > 8000:
         raise ToolFail("invalid", "text")
-    if idempotency_key:
-        prev = xfer.get_op(acc, idempotency_key)
-        if prev:
-            return _replay(prev)
+    req_hash = _op_hash("mcp.chat_send", channel, text)
+    replayed = _replay_or_conflict(acc, idempotency_key, req_hash)
+    if replayed is not None:
+        return replayed
     with connect() as conn:
         th = conn.execute("SELECT * FROM chat_threads WHERE thread_id=?", (channel,)).fetchone()
         if not th:
@@ -406,7 +546,7 @@ def chat_send(p, *, channel: str, text: str, idempotency_key: str = "") -> dict[
         )
     out = {"message_id": mid, "channel": th["thread_id"], "created_at": created}
     if idempotency_key:
-        xfer.remember_op(acc, idempotency_key, "mcp.chat_send", th["thread_id"], sha256_bytes(text.encode()), 200, out)
+        xfer.remember_op(acc, idempotency_key, "mcp.chat_send", th["thread_id"], req_hash, 200, out)
     return out
 
 
@@ -446,10 +586,10 @@ def publish_request(p, *, plan_id: str, manifest_hash: str, idempotency_key: str
     acc = _acc(p)
     if not acc.has_scope("publish:request"):
         raise ToolFail("forbidden", "publish:request required")
-    if idempotency_key:
-        prev = xfer.get_op(acc, idempotency_key)
-        if prev:
-            return _replay(prev)
+    req_hash = _op_hash("mcp.publish_request", plan_id, manifest_hash)
+    replayed = _replay_or_conflict(acc, idempotency_key, req_hash)
+    if replayed is not None:
+        return replayed
     try:
         info = xfer.request_from_plan(acc, plan_id=plan_id, manifest_hash=manifest_hash)
     except PermissionError:
@@ -457,7 +597,7 @@ def publish_request(p, *, plan_id: str, manifest_hash: str, idempotency_key: str
     except RuntimeError:
         raise ToolFail("conflict")
     if idempotency_key:
-        xfer.remember_op(acc, idempotency_key, "mcp.publish_request", plan_id, manifest_hash, 201, info)
+        xfer.remember_op(acc, idempotency_key, "mcp.publish_request", plan_id, req_hash, 201, info)
     return info
 
 
@@ -491,7 +631,7 @@ def register(mcp, mcp_require) -> None:
         try:
             return fn(p, **kwargs)
         except ToolFail as exc:
-            raise ToolError(str(exc) or exc.code) from exc
+            raise ToolError(exc.as_text()) from exc
 
     def _tool(name: str):
         try:
@@ -511,18 +651,18 @@ def register(mcp, mcp_require) -> None:
 
     @_tool("workspace_read")
     def _t_wsr(file_id: str, revision: int = 0, max_bytes: int = WRITE_TEXT_MAX) -> dict[str, Any]:
-        """Read a workspace file. Large files are truncated."""
+        """Read a workspace file at a specific revision. revision=0 means latest. Unknown revisions error; they never silently return HEAD."""
         return _call(workspace_read, file_id=file_id, revision=revision, max_bytes=max_bytes)
 
     @_tool("workspace_write_text")
     def _t_wsw(relative_path: str, text: str, expected_revision: int = -1, idempotency_key: str = "") -> dict[str, Any]:
-        """Create or overwrite UTF-8 text in the caller's own workspace (64 KiB)."""
+        """Create or overwrite UTF-8 text in the caller's own workspace (64 KiB). Same idempotency_key with different body returns IDEMPOTENCY_CONFLICT."""
         rev = None if expected_revision is None or expected_revision < 0 else expected_revision
         return _call(workspace_write_text, relative_path=relative_path, text=text, expected_revision=rev, idempotency_key=idempotency_key)
 
     @_tool("binary_begin")
     def _t_bb(name: str, bytes: int, sha256: str = "", purpose: str = "archive") -> dict[str, Any]:
-        """Open a one-time PUT ticket for a workspace archive. Host streams raw bytes; do not Base64."""
+        """Open a one-time PUT ticket. Prefer workspace_stage_file when the host can attach the file. Does not accept file bytes itself."""
         return _call(binary_begin, name=name, bytes=bytes, sha256=sha256, purpose=purpose)
 
     @_tool("binary_status")
@@ -532,12 +672,12 @@ def register(mcp, mcp_require) -> None:
 
     @_tool("import_prepare")
     def _t_ip(staging_id: str = "", dest: str = "") -> dict[str, Any]:
-        """Preview an archive already PUT into the caller's own staging area."""
+        """Preview an archive already staged with workspace_stage_file or binary_begin+PUT. Requires staging_id. Enabled when binary_upload is true."""
         return _call(import_prepare, staging_id=staging_id, dest=dest)
 
     @_tool("import_commit")
     def _t_ic(preview_id: str = "", manifest_hash: str = "", idempotency_key: str = "") -> dict[str, Any]:
-        """Commit a prepared import into the caller's own workspace. Idempotent with idempotency_key."""
+        """Commit a prepared import into the caller's own workspace. Enabled when binary_upload is true. Same key with different params is IDEMPOTENCY_CONFLICT."""
         return _call(import_commit, preview_id=preview_id, manifest_hash=manifest_hash, idempotency_key=idempotency_key)
 
     @_tool("job_status")

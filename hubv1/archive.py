@@ -124,16 +124,17 @@ def archive_stem(name: str) -> str:
         return "archive"
 
 
-def _parts(raw: str) -> Optional[list[str]]:
+def _parts(raw: str, *, context: str = "archive") -> Optional[list[str]]:
     text = (raw or "").replace("\\", "/").strip()
+    in_archive = context == "archive"
     if not text or text.startswith("/") or text.startswith("~") or (len(text) > 1 and text[1] == ":"):
-        raise ValueError("unsafe path in archive")
+        raise ValueError("unsafe path in archive" if in_archive else "unsafe path")
     out: list[str] = []
     for part in text.split("/"):
         if part in {"", "."}:
             continue
         if part == "..":
-            raise ValueError("path traversal in archive")
+            raise ValueError("path traversal in archive" if in_archive else "path traversal")
         low = part.lower()
         if low in SKIP_PARTS or low.startswith("__macosx"):
             return None

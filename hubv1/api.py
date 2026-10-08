@@ -22,6 +22,7 @@ from hubv1.align import (
 )
 from hubv1.chat import archive_path, live_dates, serialize_message
 from hubv1.events import append_event
+from hubv1.version import APP_VERSION
 from hubv1.store import (
     CANON_DIR,
     ATTACH_DIR,
@@ -43,7 +44,7 @@ from hubv1.store import (
 router = APIRouter(prefix="/api/v1")
 shared_router = APIRouter(prefix="/api/shared")
 CTRL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
-SCHEMA = "1.3.1"
+SCHEMA = APP_VERSION
 
 
 def envelope(request: Request, data: Any, *, cursor=None, stale=False, omitted=0, status=200) -> JSONResponse:
