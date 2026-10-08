@@ -8003,7 +8003,7 @@
           "copyright_holder": {
             "type": "string",
             "title": "Copyright Holder",
-            "default": "Xiwei Chen"
+            "default": "sunnyspot114514"
           },
           "workspace_id": {
             "type": "string",

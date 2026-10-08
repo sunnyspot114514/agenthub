@@ -419,7 +419,7 @@ def publish_prepare(p, *, file_ids: list[str], repo: str, visibility: str = "pub
     with connect() as conn:
         from hubv1.store import cfg
 
-        holder = cfg(conn, "mit_copyright_holder") or "Xiwei Chen"
+        holder = cfg(conn, "mit_copyright_holder") or "sunnyspot114514"
     if "/" not in repo:
         raise ToolFail("invalid", "repo owner/name")
     # freeze via xfer.create_plan using prefix of first file path if possible

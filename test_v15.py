@@ -60,7 +60,7 @@ class V15Tests(unittest.TestCase):
         hub._token_cache.clear()
         with connect() as conn:
             conn.execute("UPDATE hub_config SET value='1' WHERE key='feature_publisher'")
-            conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('mit_copyright_holder','Xiwei Chen')")
+            conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('mit_copyright_holder','sunnyspot114514')")
             conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('publisher_allowed_owners','[\"sunnyspot114514\"]')")
         cls.client = TestClient(hub.app)
         cls.client.post(
@@ -372,7 +372,7 @@ class V15Tests(unittest.TestCase):
         plan = self.client.post(
             "/api/v1/publish/plans",
             headers=auth(self.tok_a),
-            json={"prefix": "pub15", "repo": "sunnyspot114514/cli-mock-repo", "mode": "create", "visibility": "public", "license": "MIT", "copyright_holder": "Xiwei Chen"},
+            json={"prefix": "pub15", "repo": "sunnyspot114514/cli-mock-repo", "mode": "create", "visibility": "public", "license": "MIT", "copyright_holder": "sunnyspot114514"},
         )
         self.assertEqual(plan.status_code, 201, plan.text[:300])
         req = self.client.post(

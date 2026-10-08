@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
-authors = [{ name = "Xiwei Chen" }]
+authors = [{ name = "sunnyspot114514" }]
 dependencies = ["httpx>=0.28,<1"]
 
 [project.optional-dependencies]

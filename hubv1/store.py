@@ -868,8 +868,7 @@ def seed_profile_drafts(conn: sqlite3.Connection) -> None:
             continue
         old = row["body"] or ""
         stale_token_gate = (not row["published"]) and (
-            "陈希玮" in old
-            or "待所有者审核后发布给 Agent" in old
+            "待所有者审核后发布给 Agent" in old
             or "尚未发布给外部" in old
             or "PDF 未上传到本机" in old
             or "未收录证件、银行、成绩单" in old

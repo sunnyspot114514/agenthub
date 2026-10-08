@@ -259,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--mode", default="create")
     plan.add_argument("--visibility", default="public")
     plan.add_argument("--license", default="MIT")
-    plan.add_argument("--copyright-holder", default="Xiwei Chen")
+    plan.add_argument("--copyright-holder", default="sunnyspot114514")
     plan.add_argument("--out", default="")
     plan.set_defaults(func=cmd_publish)
     req = pub_sub.add_parser("request")
