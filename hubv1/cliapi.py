@@ -52,7 +52,7 @@ class PlanIn(BaseModel):
     mode: str = "create"
     visibility: str = "public"
     license: str = "MIT"
-    copyright_holder: str = "Xiwei Chen"
+    copyright_holder: str = "sunnyspot114514"
     workspace_id: str = ""
 
 

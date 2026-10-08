@@ -46,7 +46,7 @@ class PublishTests(unittest.TestCase):
         hub._token_cache.clear()
         with connect() as conn:
             conn.execute("UPDATE hub_config SET value='1' WHERE key='feature_publisher'")
-            conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('mit_copyright_holder','Xiwei Chen')")
+            conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('mit_copyright_holder','sunnyspot114514')")
             conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('publisher_allowed_owners','[\"sunnyspot114514\"]')")
         cls.client = TestClient(hub.app)
         cls.client.post(

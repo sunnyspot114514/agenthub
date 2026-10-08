@@ -438,7 +438,6 @@ class V10Tests(unittest.TestCase):
         self.assertIn("shared-context", collab.get("body", ""))
         self.assertIn("协作", collab.get("body", "") + collab.get("title", ""))
         self.assertNotEqual(collab.get("body"), "协作资料尚未发布。")
-        self.assertNotIn("陈希玮", collab.get("body", ""))
         self.assertNotIn("PDF 未上传到本机", collab.get("body", ""))
         self.assertNotIn("未收录证件、银行、成绩单", collab.get("body", ""))
         self.assertIn("Boundaries", collab.get("body", ""))
@@ -446,13 +445,11 @@ class V10Tests(unittest.TestCase):
         admin_c = self.json("GET", "/api/v1/profiles/collab", self.admin, expected=200).json()["data"]
         self.assertIn("协作", admin_c.get("body", "") + admin_c.get("title", ""))
         self.assertIn("shared-context", admin_c.get("body", ""))
-        self.assertNotIn("陈希玮", admin_c.get("body", ""))
         token_pub = self.json("GET", "/api/v1/profiles/public", self.tok_a, expected=200).json()["data"]
         self.assertIn("Hub owner", token_pub.get("body", ""))
         self.assertFalse(token_pub.get("public_web"))
         admin_p = self.json("GET", "/api/v1/profiles/public", self.admin, expected=200).json()["data"]
         self.assertIn("Hub owner", admin_p.get("body", ""))
-        self.assertNotIn("陈希玮", admin_p.get("body", ""))
         about = self.client.get("/about").text
         self.assertNotIn("token-agent-a", about)
         cfg = self.json("GET", "/api/v1/access", self.tok_a, expected=200).json()["data"]

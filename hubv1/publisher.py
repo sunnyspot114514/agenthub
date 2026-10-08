@@ -374,13 +374,13 @@ def execute_one(row: dict[str, Any]) -> dict[str, Any]:
         else:
             with connect() as conn:
                 _set_state(conn, row["request_id"], "pushing", result)
-        staging = _write_staging(files, holder or "Xiwei Chen")
+        staging = _write_staging(files, holder or "sunnyspot114514")
         git_c = [
             "git",
             "-c",
             "core.hooksPath=/dev/null",
             "-c",
-            "user.name=Xiwei Chen",
+            "user.name=sunnyspot114514",
             "-c",
             "user.email=sunnyspot114514@users.noreply.github.com",
         ]

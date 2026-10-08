@@ -56,7 +56,7 @@ class V14Tests(unittest.TestCase):
         hub._token_cache.clear()
         with connect() as conn:
             conn.execute("UPDATE hub_config SET value='1' WHERE key='feature_publisher'")
-            conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('mit_copyright_holder','Xiwei Chen')")
+            conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('mit_copyright_holder','sunnyspot114514')")
             conn.execute("INSERT OR REPLACE INTO hub_config(key,value) VALUES ('publisher_allowed_owners','[\"sunnyspot114514\"]')")
         cls.client = TestClient(hub.app)
         cls.client.post(
@@ -433,7 +433,7 @@ class V14Tests(unittest.TestCase):
         plan = self.client.post(
             "/api/v1/publish/plans",
             headers=auth(self.tok_a),
-            json={"prefix": "pub", "repo": "sunnyspot114514/cli-mock-repo", "mode": "create", "visibility": "public", "license": "MIT", "copyright_holder": "Xiwei Chen"},
+            json={"prefix": "pub", "repo": "sunnyspot114514/cli-mock-repo", "mode": "create", "visibility": "public", "license": "MIT", "copyright_holder": "sunnyspot114514"},
         )
         self.assertEqual(plan.status_code, 201, plan.text[:400])
         pdata = plan.json()["data"]
@@ -463,7 +463,7 @@ class V14Tests(unittest.TestCase):
         plan = self.client.post(
             "/api/v1/publish/plans",
             headers=auth(self.tok_a),
-            json={"prefix": "pub", "repo": "sunnyspot114514/cli-mock-repo", "mode": "create", "visibility": "public", "license": "MIT", "copyright_holder": "Xiwei Chen"},
+            json={"prefix": "pub", "repo": "sunnyspot114514/cli-mock-repo", "mode": "create", "visibility": "public", "license": "MIT", "copyright_holder": "sunnyspot114514"},
         )
         pdata = plan.json()["data"]
         req = self.client.post(
