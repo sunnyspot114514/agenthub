@@ -1,6 +1,6 @@
-# Agenthub 1.4.0 / plan v1.6
+# Agenthub 1.4.4 / plan v1.6
 
-Service version 1.4.1 implements plan v1.6 OAuth + restricted MCP. Plugin package is 0.1.0. Refresh tokens are not calendar-limited.
+Service version **1.4.4** includes plan v1.6 OAuth + restricted MCP (landed in 1.4.0–1.4.1). Plugin package is 0.1.0. Refresh tokens are not calendar-limited. Binary import is on.
 
 ## Source pin
 
@@ -12,8 +12,8 @@ Service version 1.4.1 implements plan v1.6 OAuth + restricted MCP. Plugin packag
 ## Flags
 
 - `feature_oauth=1`
-- `feature_mcp_write=1` (UTF-8 ≤ 64 KiB)
-- `feature_binary_bridge=0` (B03/B04 not claimed)
+- `feature_mcp_write=1` (UTF-8 ≤ 64 KiB; own-workspace text, approved chat, publish request)
+- `feature_binary_bridge=1` (`workspace_stage_file`, ticketed PUT, ZIP/TAR import)
 
 ## TTLs (defaults)
 

@@ -12,6 +12,6 @@ Software versions (`APP_VERSION`) are independent of internal design-doc numbers
 | 1.4.1 | Refresh tokens last until revoke or identity disable (no 7/30-day calendar cap) |
 | 1.4.2 | Ticketed binary PUT, ZIP/TAR import over MCP, `api_version` aligned with hub status |
 | 1.4.3 | `workspace_read` honors `revision`; missing revision errors; `IDEMPOTENCY_CONFLICT`; `workspace_stage_file`; MCP surface `restricted`; `REVISION_CONFLICT` |
-| **1.4.4** | `.md` stored as `text/markdown`; path-traversal errors no longer say “archive”; JSON envelope `schema_version` follows `APP_VERSION` |
+| **1.4.4** | `.md` stored as `text/markdown`; path-traversal errors no longer say “archive”; JSON envelope `schema_version` follows `APP_VERSION`; OAuth notes match 1.4.4 (`feature_binary_bridge=1`) |
 
 Flags default on in 1.4.4: `feature_workspace`, `feature_oauth`, `feature_mcp_write`, `feature_binary_bridge`. Publisher and independent backup stay off until the operator enables them.
