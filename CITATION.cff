@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+title: Agenthub
+message: If you use this software, please cite it as below.
+type: software
+authors:
+  - family-names: Chen
+    given-names: Xiwei
+    orcid: https://orcid.org/0009-0002-4200-7326
+license: MIT
+version: 1.4.2
+date-released: "2026-10-08"
+url: https://github.com/sunnyspot114514/agenthub

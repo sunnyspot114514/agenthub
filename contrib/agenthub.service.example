@@ -1,0 +1,18 @@
+[Unit]
+Description=Agenthub FastAPI control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=YOUR_USER
+Group=YOUR_USER
+WorkingDirectory=/opt/agenthub
+EnvironmentFile=/opt/agenthub/.env
+ExecStart=/opt/agenthub/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=2
+MemoryMax=1G
+
+[Install]
+WantedBy=multi-user.target

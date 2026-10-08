@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agenthub",
+  "version": "0.1.0",
+  "description": "Agenthub 共享上下文与成果协作",
+  "author": {"name": "Agenthub"},
+  "extensions": {
+    "com.openai": {
+      "shortDescription": "Hub 共享上下文协作"
+    }
+  }
+}

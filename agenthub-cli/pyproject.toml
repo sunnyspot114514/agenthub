@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agenthub-cli"
+version = "0.1.0"
+description = "HTTPS client for Agenthub. Does not hold GitHub credentials or talk to Pi SQLite."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [{ name = "Xiwei Chen" }]
+dependencies = ["httpx>=0.28,<1"]
+
+[project.optional-dependencies]
+keyring = ["keyring"]
+
+[project.scripts]
+agenthub = "agenthub_cli.cli:main"
+
+[project.urls]
+Documentation = "https://agenthub.sunny99.win"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agenthub_cli"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/README.md", "/LICENSE", "/CHANGELOG.md", "/docs", "/tests", "/pyproject.toml"]
