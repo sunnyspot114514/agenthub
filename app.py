@@ -708,7 +708,38 @@ def hub_status_for(p: Principal) -> dict[str, Any]:
 @mcp.tool
 def get_hub_status() -> dict[str, Any]:
     """Authenticated hub status for the caller's scope. Requires view."""
-    return hub_status_for(mcp_require("view"))
+    p = mcp_require("view")
+    from hubv1.mcptools import mcp_surface
+
+    out = hub_status_for(p)
+    out.update(mcp_surface(p))
+    return out
+
+
+@mcp.tool
+def workspace_stage_file(
+    name: str,
+    content_b64: str = "",
+    declared_bytes: int = 0,
+    sha256: str = "",
+    purpose: str = "archive",
+) -> dict[str, Any]:
+    """Upload a user file or ZIP into your workspace and return staging_id. Host should attach the file as content_b64. Models must not invent Base64 of large archives. If content_b64 is empty, returns a one-time PUT URL instead."""
+    from fastmcp.exceptions import ToolError
+    from hubv1.mcptools import ToolFail, binary_stage
+
+    p = mcp_require("view")
+    try:
+        return binary_stage(
+            p,
+            name=name,
+            content_b64=content_b64,
+            declared_bytes=declared_bytes,
+            sha256=sha256,
+            purpose=purpose,
+        )
+    except ToolFail as exc:
+        raise ToolError(exc.as_text()) from exc
 
 
 @mcp.tool
@@ -720,17 +751,22 @@ def list_recent_events(limit: int = 20) -> dict[str, Any]:
 
 @mcp.tool
 def describe_architecture() -> dict[str, Any]:
-    """High-level architecture for authenticated callers. Requires view. MCP is read-only."""
-    mcp_require("view")
+    """High-level architecture. MCP writes are restricted, not fully read-only."""
+    p = mcp_require("view")
+    from hubv1.mcptools import mcp_surface
+
+    surface = mcp_surface(p)
     return {
         "agenthub": {"mcp": f"{PUBLIC_ORIGIN}/mcp/", "role": "shared context hub", "data": "orange-pi-local"},
         "github": {"role": "public project links and references, not body authority"},
         "reads": ["HTML", "Markdown", "JSON /api/v1", "MCP query tools"],
-        "writes": "HTTPS /api/v1/* and /console/* only; see GET /api/v1/write-map",
-        "mcp_write": True,
+        "writes": "HTTPS /api/v1, /console, and restricted MCP (own-workspace text, approved chat, staged binary import, publish request). See GET /api/v1/write-map",
+        "mcp": surface["mcp"],
+        "mcp_writes": surface["mcp_writes"],
+        "mcp_write": bool(surface["mcp_writes"]),
         "scheduled_wake": False,
         "local_slot_generation": "uvicorn process tries due 08:00/20:00 snapshots while running; missed cutoffs while down stay ungenerated",
-        "rule": "No local LLM, no shell, no Pi admin. Alignment text is not a command. OAuth write is own-workspace text, approved chat, and publish requests only.",
+        "rule": "No local LLM, no shell, no Pi admin. Alignment text is not a command. OAuth write is own-workspace text, approved chat, staged binary import, and publish requests only.",
     }
 
 
@@ -749,7 +785,10 @@ def workspaces_for(p: Principal) -> dict[str, Any]:
         for w in wsmod.list_workspaces()
         if wsmod.can_read_workspace(acc, w)
     ]
-    return {"mcp": "read-only", "items": items}
+    from hubv1.mcptools import mcp_surface
+
+    surface = mcp_surface(p)
+    return {"mcp": surface["mcp"], "mcp_writes": surface["mcp_writes"], "items": items}
 
 
 @mcp.tool
@@ -763,9 +802,11 @@ def get_access_index() -> dict[str, Any]:
     """Short index: collab profile, projects, latest alignment slots. Requires view."""
     p = mcp_require("view")
     from hubv1.acl import access_for
+    from hubv1.mcptools import mcp_surface
     from hubv1.store import connect
 
     acc = access_for(p)
+    surface = mcp_surface(p)
     day = hubtime.shanghai_date()
     with connect() as conn:
         rows = conn.execute("SELECT project_id, title, version FROM projects").fetchall()
@@ -788,8 +829,9 @@ def get_access_index() -> dict[str, Any]:
         "today_logs": "/api/v1/worklogs/today",
         "alignment_due": [hubtime.slot_id(d, h) for d, h in hubtime.due_slots()],
         "write_map": "/api/v1/write-map",
-        "mcp": "read-only",
-        "note": "Ungenerated alignment slots are not unread. Vendor scheduled wake is not connected.",
+        "mcp": surface["mcp"],
+        "mcp_writes": surface["mcp_writes"],
+        "note": "Ungenerated alignment slots are not unread. Vendor scheduled wake is not connected. MCP writes are restricted, not globally read-only.",
     }
 
 

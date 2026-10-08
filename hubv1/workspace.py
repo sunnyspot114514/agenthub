@@ -223,6 +223,13 @@ def _node(conn, node_id: str):
     return conn.execute("SELECT * FROM workspace_nodes WHERE node_id=?", (node_id,)).fetchone()
 
 
+class RevisionConflict(RuntimeError):
+    def __init__(self, current: int, expected: int):
+        self.current = int(current)
+        self.expected = int(expected)
+        super().__init__("conflict")
+
+
 def get_node(node_id: str) -> Optional[dict[str, Any]]:
     with connect() as conn:
         row = _node(conn, node_id)
@@ -280,6 +287,16 @@ def guess_mime(name: str) -> str:
         ".jpeg": "image/jpeg",
         ".webp": "image/webp",
     }.get(ext, "application/octet-stream")
+
+
+def mime_for_text(name: str, mime: str = "") -> str:
+    mime = (mime or "").strip()
+    if mime:
+        return mime
+    guessed = guess_mime(name)
+    if guessed == "application/octet-stream":
+        return "text/plain; charset=utf-8"
+    return guessed
 
 
 def upload_name_ok(name: str) -> bool:
@@ -480,7 +497,7 @@ def update_file(acc, node_id: str, *, expected_revision: int, data: bytes, mime:
         if node["kind"] != "file":
             raise ValueError("not a file")
         if int(node["revision"]) != int(expected_revision):
-            raise RuntimeError("conflict")
+            raise RevisionConflict(int(node["revision"]), int(expected_revision))
         quota = int(ws["quota_bytes"] or 0) or flag_int("workspace_quota_bytes", WORKSPACE_QUOTA_BYTES)
         if used_bytes(conn, node["workspace_id"]) + len(data) > quota:
             raise MemoryError("quota")
@@ -520,7 +537,7 @@ def update_file(acc, node_id: str, *, expected_revision: int, data: bytes, mime:
             (ver_id, new_rev, now, node_id, expected_revision),
         )
         if cur.rowcount != 1:
-            raise RuntimeError("conflict")
+            raise RevisionConflict(int(node["revision"]), int(expected_revision))
         used = used_bytes(conn, node["workspace_id"])
         conn.execute("UPDATE workspaces SET used_bytes=?, updated_at=? WHERE workspace_id=?", (used, now, node["workspace_id"]))
         audit(conn, acc.p.id, "workspace.node_update", node_id, request_id, admin_reason or "ok")
@@ -641,19 +658,42 @@ def list_versions(node_id: str) -> list[dict[str, Any]]:
 
 
 def file_payload(node_id: str, version_id: Optional[str] = None) -> tuple[bytes, str, str]:
+    data, mime, name, _served = file_at_revision(node_id, version_id=version_id, revision=0)
+    return data, mime, name
+
+
+def file_at_revision(
+    node_id: str,
+    *,
+    version_id: Optional[str] = None,
+    revision: int = 0,
+) -> tuple[bytes, str, str, int]:
     with connect() as conn:
         node = _node(conn, node_id)
         if not node:
             raise KeyError("not found")
-        vid = version_id or node["current_version_id"]
-        ver = conn.execute("SELECT * FROM workspace_versions WHERE version_id=?", (vid,)).fetchone()
+        current = int(node["revision"] or 0)
+        ver = None
+        if version_id:
+            ver = conn.execute("SELECT * FROM workspace_versions WHERE version_id=?", (version_id,)).fetchone()
+        elif revision and int(revision) > 0:
+            ver = conn.execute(
+                "SELECT * FROM workspace_versions WHERE node_id=? AND version_no=?",
+                (node_id, int(revision)),
+            ).fetchone()
+            if not ver:
+                raise KeyError("revision")
+        else:
+            vid = node["current_version_id"]
+            ver = conn.execute("SELECT * FROM workspace_versions WHERE version_id=?", (vid,)).fetchone()
         if not ver:
             raise KeyError("not found")
         blob = conn.execute("SELECT * FROM stored_blobs WHERE blob_id=?", (ver["blob_id"],)).fetchone()
     data = read_blob_bytes(blob["storage_key"] if blob else "")
     if data is None:
         raise FileNotFoundError("blob")
-    return data, ver["mime_type"] or "application/octet-stream", node["name"]
+    served = int(ver["version_no"] or current)
+    return data, ver["mime_type"] or "application/octet-stream", node["name"], served
 
 
 def file_disk(node_id: str, version_id: Optional[str] = None) -> tuple[Path, str, str]:
@@ -681,7 +721,7 @@ def file_disk(node_id: str, version_id: Optional[str] = None) -> tuple[Path, str
 def parse_relpath(path: str) -> list[str]:
     from hubv1.archive import _parts
 
-    parts = _parts(path)
+    parts = _parts(path, context="path")
     if not parts:
         raise ValueError("bad path")
     return parts

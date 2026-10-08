@@ -435,21 +435,21 @@ class V10Tests(unittest.TestCase):
         self.assertNotIn("协作偏好", pub.get("body", ""))
         collab = self.json("GET", "/api/v1/profiles/collab", self.tok_a, expected=200).json()["data"]
         self.assertTrue(collab.get("token_readable"))
-        self.assertTrue(collab.get("body", ""))
+        self.assertIn("shared-context", collab.get("body", ""))
         self.assertIn("协作", collab.get("body", "") + collab.get("title", ""))
         self.assertNotEqual(collab.get("body"), "协作资料尚未发布。")
         self.assertNotIn("PDF 未上传到本机", collab.get("body", ""))
         self.assertNotIn("未收录证件、银行、成绩单", collab.get("body", ""))
-        self.assertIn("个人学业记录", collab.get("body", ""))
-        self.assertIn("默认避开", collab.get("body", ""))
+        self.assertIn("Boundaries", collab.get("body", ""))
+        self.assertIn("passwords", collab.get("body", ""))
         admin_c = self.json("GET", "/api/v1/profiles/collab", self.admin, expected=200).json()["data"]
         self.assertIn("协作", admin_c.get("body", "") + admin_c.get("title", ""))
-        self.assertTrue(admin_c.get("body", ""))
+        self.assertIn("shared-context", admin_c.get("body", ""))
         token_pub = self.json("GET", "/api/v1/profiles/public", self.tok_a, expected=200).json()["data"]
-        self.assertTrue(token_pub.get("body", ""))
+        self.assertIn("Hub owner", token_pub.get("body", ""))
         self.assertFalse(token_pub.get("public_web"))
         admin_p = self.json("GET", "/api/v1/profiles/public", self.admin, expected=200).json()["data"]
-        self.assertTrue(admin_p.get("body", ""))
+        self.assertIn("Hub owner", admin_p.get("body", ""))
         about = self.client.get("/about").text
         self.assertNotIn("token-agent-a", about)
         cfg = self.json("GET", "/api/v1/access", self.tok_a, expected=200).json()["data"]
@@ -505,7 +505,7 @@ class V10Tests(unittest.TestCase):
         self.assertTrue(any(p["project_id"] == "proj_a" for p in acc["writable_projects"]))
         self.assertFalse(any(p["project_id"] == "proj_b" for p in acc["writable_projects"]))
         ctx_prof = ctx.get("collab_profile") or {}
-        self.assertTrue(ctx_prof.get("body") or "")
+        self.assertIn("shared-context", ctx_prof.get("body") or "")
 
     def test_19_mcp_bearer_matches_rest(self):
         rest = self.json("GET", "/v1/status", self.tok_a, expected=200).json()

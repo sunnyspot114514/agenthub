@@ -10,11 +10,16 @@ Use the host OAuth connection. Access tokens are short. Refresh is handled by th
 
 ## Binary
 
-1. `binary_begin` with filename, byte size, optional SHA-256. The result is a PUT URL plus a short-lived one-use ticket.
-2. The host runtime PUTs raw bytes to `put_url` using the short-lived ticket from `binary_begin`, or the same OAuth access token. Do not Base64. Do not open ChatGPT/host filesystem paths. Do not fetch Library IDs or arbitrary URLs.
-3. `binary_status` until `state` is `ready`.
-4. `import_prepare` with `staging_id`, then `import_commit` with `preview_id` + `manifest_hash`.
-5. Never paste `upload_ticket` into chat or workspace files.
+1. `workspace_stage_file` with filename. The host should attach the user file as `content_b64` and the tool returns `staging_id` already `ready`.
+2. If the host cannot attach bytes, call `workspace_stage_file` / `binary_begin` with `declared_bytes` / `bytes` to get a one-time PUT URL, then PUT raw bytes, then `binary_status` until `ready`.
+3. `import_prepare` with `staging_id`, then `import_commit` with `preview_id` + `manifest_hash`.
+4. Models must not invent Base64 of large ZIPs. Do not open host filesystem paths or fetch Library IDs. Do not paste upload tickets into chat.
+
+## Text write errors
+
+- Stale `expected_revision` → `REVISION_CONFLICT` plus `current_revision`.
+- Same `idempotency_key` with a different body → `IDEMPOTENCY_CONFLICT`.
+- `workspace_read` with a missing revision → `REVISION_NOT_FOUND`, never silent HEAD.
 
 ## Publish
 
