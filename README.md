@@ -5,191 +5,179 @@
 
 [🇺🇸 English](README.md) | [🇨🇳 中文说明](README.zh-CN.md)
 
-> A local-first home Agent Hub: shared context, per-agent workspaces, and human-approved publish. Not a local LLM.
+> A local-first home Agent Hub: one small service where authorized agents share context, keep their own workspace, talk in shared chat, and hand work to a human for GitHub publishing.
 
-Current software version: **1.4.4**.
+Version in this tree: **1.4.4** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
 
-Author instance (optional reference, not a public API for strangers): [https://agenthub.sunny99.win](https://agenthub.sunny99.win)
+## What Agenthub does
 
-## TL;DR
+Agenthub runs on a machine you own and gives every agent identity the same, well-defined surface over HTTPS (REST) and MCP:
 
-Several authorized agents need a small, boring place to read the same files, write into their own workspace, and ask a human before anything reaches GitHub.
+| Capability | What you get |
+|------------|--------------|
+| **Shared context** | Library (with full-text search), projects, articles, collab profile, and worklogs, packed into a short `/context` index |
+| **Per-agent workspaces** | A versioned file tree per identity; every authed agent can read it, its owner writes to it |
+| **Shared chat** | Threads for agents and the owner, with idempotent sends and daily Markdown archives |
+| **Briefings** | Alignment snapshots at 08:00 and 20:00 (Asia/Shanghai), generated per recipient by the embedded scheduler |
+| **File transfer** | MCP hosts attach a file in one call (`workspace_stage_file`) or use a ticketed raw-byte PUT; ZIP / TAR / TAR.GZ archives import atomically as tracked jobs |
+| **GitHub publishing** | Agents prepare a plan and file a request; the owner approves it, then the hub pushes with `gh` |
+| **Owner console** | Browser UI at `/console` for identities, grants, connections, library, chat, and approvals |
 
-Agenthub is that place. Canonical data lives on the machine that runs the service. This GitHub copy is source code, not the live database.
+The data of record (SQLite plus files under `data/`) lives on the host that runs the service. This repository is the source code.
 
-```text
-Agent (curl / Python / MCP / optional CLI)
-        |
-        v
-   HTTPS + Bearer or OAuth
-        |
-        v
-   FastAPI + restricted MCP
-        |
-        v
-   SQLite (WAL, synchronous FULL)
-```
-
-## What this is (and is not)
-
-**This project is:**
-
-- a home control plane for already-authorized agents
-- a workspace per identity, readable by other authed agents, writable only by the owner
-- OAuth 2.1 + PKCE for host connectors, plus legacy Bearer identities
-- two-phase upload and ZIP/TAR import without putting Base64 into the model context
-- GitHub publish that queues a request; a human still has to approve
-
-**This project is not:**
-
-- a local LLM, shell, code runner, or Orange Pi admin API
-- an open signup hub for stranger agents
-- a second source of truth that replaces the live SQLite store
-- auto-approval for GitHub, or a way to fetch arbitrary URLs (no SSRF import)
-
-## Why it exists
-
-Prompt-only “shared folders” leak writes, mix chat with authorization, and make it too easy to paste secrets. Agenthub keeps a short rule:
-
-> Reads can be wide for a valid token. Writes stay scoped. Publish stays pending until a human says yes.
-
-## Mental model
+## Architecture
 
 ```mermaid
-flowchart TD
-    A[Authorized agent] --> B{How?}
-    B -->|HTTPS JSON| C[REST /api/v1]
-    B -->|MCP OAuth| D[Restricted tools]
-    C --> E[ACL]
-    D --> E
-    E --> F[Own workspace write]
-    E --> G[Shared chat if granted]
-    E --> H[Publish request]
-    H --> I[Human approve]
-    I --> J[gh create/push]
+flowchart LR
+    subgraph Clients
+        A1[Agents<br/>curl / Python / CLI]
+        A2[MCP hosts<br/>OAuth 2.1 PKCE or Bearer]
+        O[Owner browser]
+    end
+
+    A1 & A2 & O -->|HTTPS| CF[Cloudflare Tunnel<br/>or reverse proxy]
+    CF --> MW
+
+    subgraph App["uvicorn · app.py (FastAPI) on 127.0.0.1:8000"]
+        MW[Security middleware<br/>auth · rate limit · CSRF · body limit]
+        MW --> REST[REST<br/>/api/v1 · /api/shared · /v1]
+        MW --> MCP[MCP<br/>/mcp/ streamable HTTP]
+        MW --> WEB[Console + discovery<br/>/console · /agent · /oauth]
+        REST & MCP & WEB --> ACL[Identity + ACL<br/>acl.py · oauth.py]
+        ACL --> WS[Workspaces<br/>workspace.py · wsapi.py]
+        ACL --> XF[Upload + import<br/>xfer.py · archive.py]
+        ACL --> CH[Chat<br/>chat.py]
+        ACL --> CTX[Library · projects · worklogs<br/>api.py · assets.py]
+        ACL --> PUB[Publisher<br/>publisher.py]
+        SCH[Embedded scheduler<br/>every 20 s] --> AL[Briefings<br/>align.py]
+        SCH --> JOBS[Jobs<br/>chat archive · publish queue]
+    end
+
+    WS & XF & CH & CTX & PUB & AL & JOBS --> DB[(SQLite data/hub.db<br/>WAL · synchronous FULL)]
+    WS & XF --> FS[data/wsblobs · data/uploads]
+    CH & JOBS --> PJ[data/projections/chat]
+    CTX --> CN[data/canonical · data/assets]
+    PUB -->|after owner approval| GH[GitHub via gh]
 ```
 
-Discovery for token-holding clients starts at `GET /agent` and `GET /agent/bootstrap.json`. Those documents do not contain user data.
+### Components
 
-## Version history
+| Component | Code | Responsibility |
+|-----------|------|----------------|
+| App + middleware | `app.py` | FastAPI app, lifespan, sessions, legacy `/v1` endpoints, rate limiting, CSRF, request-size limit, public vs private cache headers |
+| Identity + ACL | `hubv1/acl.py`, `hubv1/oauth.py`, `hubv1/oauth_store.py` | Bearer identities with roles (`view`, `report`, `dispatch`, `manage`), per-project grants, OAuth 2.1 PKCE with dynamic client registration; effective permission = OAuth scopes ∩ identity ACL |
+| REST API | `hubv1/api.py`, `hubv1/wsapi.py`, `hubv1/cliapi.py` | `/api/v1` resources, `/api/shared` aliases, workspace / upload / publish endpoints |
+| MCP tools | `app.py`, `hubv1/mcptools.py` | 20 tools: status and context reads, workspace list/read (any revision)/write, file staging and binary import, chat, publish; `get_hub_status` reports the caller's MCP write surface; errors carry stable codes such as `REVISION_CONFLICT` and `IDEMPOTENCY_CONFLICT` |
+| Workspaces | `hubv1/workspace.py` | Node tree with revisions, version history and per-revision reads, tombstone/restore/move, quotas (nodes, depth, bytes), MIME from file extension (`.md` → `text/markdown`) |
+| Upload + import | `hubv1/xfer.py`, `hubv1/archive.py` | Upload records, one-time PUT tickets, archive inspection, atomic import, job and idempotency tracking |
+| Chat | `hubv1/chat.py`, `hubv1/jobs.py` | Threads and messages; days before yesterday are archived to hash-verified Markdown |
+| Context | `hubv1/api.py`, `hubv1/assets.py`, `hubv1/store.py` | Library items and attachments (PDF text extraction, FTS5 search), projects, articles, profiles, worklogs |
+| Briefings | `hubv1/align.py`, `hubv1/timeutil.py` | Per-recipient 08:00 / 20:00 snapshots built from the worklogs that recipient may see, plus read receipts |
+| Publisher | `hubv1/publisher.py` | Allow-listed owners, staged snapshot of the exact file versions, `gh` create/push after approval |
+| Discovery + pages | `hubv1/discovery.py`, `hubv1/pages.py` | `/agent`, `/agent/bootstrap.json`, `/llms.txt`, console HTML |
 
-See [docs/VERSIONS.md](docs/VERSIONS.md) for the full table. Headline cuts:
+### Storage
 
-| Version | Headline |
-|---------|----------|
-| 1.0 | Hub + SQLite + identities + alignment snapshots (08:00 / 20:00 Asia/Shanghai) |
-| 1.2 | Workspaces, archive extract, GitHub publisher (approve-then-push) |
-| 1.3 | URL-first access without installing the CLI |
-| 1.4.0 | OAuth 2.1 PKCE + restricted MCP writes |
-| 1.4.1 | Refresh until revoke (no calendar day cap) |
-| 1.4.2 | Plugin binary import (`binary_upload`), aligned `api_version` |
-| 1.4.3 | MCP revision read, idempotency conflict, `workspace_stage_file`, `REVISION_CONFLICT` |
-| **1.4.4** | `.md` MIME, path-traversal copy, envelope `schema_version` = `APP_VERSION` |
+Everything lives under `AGENTHUB_ROOT/data/` (mode `0700`):
+
+| Path | Contents |
+|------|----------|
+| `hub.db` | SQLite (WAL): identities, grants, OAuth tokens (hashed), workspaces and versions, chat, library, worklogs, briefings, publish requests, jobs, audit log |
+| `wsblobs/` | Workspace file contents, addressed by blob id |
+| `uploads/` | Staged upload bytes awaiting commit or import |
+| `canonical/` | Versioned bodies for projects, library, articles, profiles |
+| `assets/`, `attachments/` | Library files |
+| `projections/chat/<thread>/<date>.md` | Daily chat archives |
+| `secrets/github.env` | Publisher credential (only when the publisher is enabled) |
+
+### Main flows
+
+**Read context.** Agent calls `GET /api/v1/me`, `GET /api/v1/capabilities`, then `GET /api/v1/context` (or MCP `hub_get_context`) to get a size-bounded index, and follows links to library items, workspaces, or briefings.
+
+**Write to own workspace.** Small text goes through `workspace_write_text` (MCP, up to 64 KiB) or `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`; updates carry `expected_revision` for optimistic concurrency (a stale value returns `REVISION_CONFLICT` with `current_revision`), and every change becomes a new version that `workspace_read` can fetch by `revision`. Reusing an idempotency key with a different body returns `IDEMPOTENCY_CONFLICT`.
+
+Files and archives from an MCP host go through `workspace_stage_file` (the host attaches the bytes and gets a ready `staging_id`), then `import_prepare` / `import_commit`. Over REST, or when the host prefers a direct upload, use two phases:
+
+```text
+POST /api/v1/uploads            -> upload_id + one-time PUT ticket
+PUT  /api/v1/uploads/{id}/content   (raw bytes, sha256 checked)
+POST /api/v1/workspaces/{ws}/files/commit        single file
+POST /api/v1/workspaces/{ws}/imports/preview     archive -> manifest_hash
+POST /api/v1/workspaces/{ws}/imports             atomic import -> job
+GET  /api/v1/jobs/{job_id}
+```
+
+**Chat.** `POST /api/v1/threads/{thread_id}/messages` or MCP `chat_send` with an idempotency key; read with `chat_read` or `GET .../messages`. The scheduler archives each thread day by day.
+
+**Publish.** The agent builds a plan from its own files (`publish_prepare` / `POST /api/v1/publish/plans`), submits it (`publish_request`), and the request waits in `awaiting_approval`. The owner approves in `/console/publish` or via `POST /api/v1/publish-requests/{id}/approve`; the hub then stages the exact approved versions (plus an MIT `LICENSE`) and pushes with `gh`.
+
+## Access model
+
+- **Tokens are owner-provisioned.** The owner creates identities and grants in the console; MCP hosts can also connect through OAuth 2.1 PKCE. Tokens are stored hashed (`oha_` access, `ohr_` refresh, `oht_` upload ticket); refresh tokens last until revoked.
+- **Reads are broad, writes are scoped.** Any valid token reads shared context and workspaces. Each identity writes to its own workspace, to project worklogs and chat it is granted, and nowhere else.
+- **Publishing is human-approved.** Agents can request; only an owner (`manage`) approves. OAuth connections are capped below `manage`.
+- **Imports are contained.** Archives are checked for path traversal, `.git`, encrypted members, and executables before anything is written.
 
 ## Quick start
 
-Python 3.11+ recommended.
-
 ```bash
-python -m venv .venv
-# Windows: .venv\Scripts\activate
-source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env
-# set AGENTHUB_API_TOKEN and AGENTHUB_SESSION_SECRET to long random values
+cp .env.example .env      # set AGENTHUB_API_TOKEN and AGENTHUB_SESSION_SECRET to long random values
 uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Then:
-
-- health: `GET /health`
-- agent card: `GET /agent`
-- bootstrap: `GET /agent/bootstrap.json`
-- login in a browser, create identities, grant scopes
-
-Put the process behind localhost + a tunnel or reverse proxy. Do not expose SQLite, `.env`, or `data/` to the internet.
-
-A systemd unit template lives at [contrib/agenthub.service.example](contrib/agenthub.service.example).
-
-## Configuration
+Open `/login`, sign in with the admin token, create identities, and grant scopes. Serve it to the outside through a tunnel or reverse proxy that forwards to `127.0.0.1:8000`; [contrib/agenthub.service.example](contrib/agenthub.service.example) is a ready systemd unit.
 
 | Variable | Role |
 |----------|------|
-| `AGENTHUB_PUBLIC_HOST` | Public hostname used in OAuth issuer / upload URLs |
-| `AGENTHUB_API_TOKEN` | Admin Bearer |
-| `AGENTHUB_SESSION_SECRET` | Cookie/session HMAC |
+| `AGENTHUB_PUBLIC_HOST` | Public hostname for OAuth issuer and upload URLs |
+| `AGENTHUB_API_TOKEN` | Admin Bearer token |
+| `AGENTHUB_SESSION_SECRET` | Session cookie HMAC key |
 | `AGENTHUB_ROOT` | Working directory (defaults to the app folder) |
 
-GitHub publisher credentials, if you enable that flag, belong in `data/secrets/github.env` on the host. They are not read from this repository.
+Feature flags live in the `hub_config` table. On by default: workspaces, OAuth, MCP writes, binary bridge, embedded scheduler. Opt-in: publisher (also needs `data/secrets/github.env` and an owner allow-list) and independent backup.
 
-## MCP and plugin
+## Entry points
 
-Streamable HTTP MCP is at `/mcp/`. Unauthenticated calls get `401` plus `WWW-Authenticate`.
+| Path | Auth | Purpose |
+|------|------|---------|
+| `/health`, `/agent`, `/agent/bootstrap.json`, `/.well-known/agenthub.json`, `/openapi.json` | public | Health and discovery |
+| `/api/v1/*` | Bearer / OAuth | Main REST API (`/capabilities` lists what your token can do) |
+| `/api/shared/*` | Bearer / OAuth | Aliases for library, chat, worklogs, search, context, uploads, publish |
+| `/v1/*` | Bearer | Legacy status, events, agents, heartbeat |
+| `/mcp/` | Bearer / OAuth | Streamable HTTP MCP; unauthenticated calls get `401` + `WWW-Authenticate` |
+| `/oauth/*`, `/.well-known/oauth-*` | public | OAuth 2.1 PKCE authorize, token, register, revoke |
+| `/console/*` | owner session | Browser console |
 
-Restricted tools include context, workspace list/read, UTF-8 writes into the **caller's own** workspace (64 KiB), approved chat, publish request, `workspace_stage_file` (host-attached file → `staging_id`), and `binary_begin` / `binary_status` / `import_prepare` / `import_commit`.
-
-The ChatGPT plugin pack is `plugin/agenthub/` (no secrets). Hosts should attach file bytes or PUT them to the ticket URL. Do not Base64 ZIPs in the model context. Do not treat host filesystem paths or Library IDs as paths this server can open.
-
-## Optional CLI
-
-`agenthub-cli` is optional. curl and Python are enough.
-
-```bash
-pip install -e ./agenthub-cli
-agenthub config set base-url https://YOUR_HOST
-agenthub whoami --json
-```
-
-Set `AGENTHUB_TOKEN` in the environment. Never pass tokens as CLI arguments, query strings, or example logs.
-
-## Tests
-
-Each file sets `AGENTHUB_ROOT` at import time. Run them in **separate processes**:
-
-```bash
-python -m unittest test_mcp_fix -v
-python -m unittest test_binary -v
-python -m unittest test_oauth -v
-python -m unittest test_v15 -v
-python -m unittest test_v14 -v
-python -m unittest test_v12 -v
-python -m unittest test_v10 -v
-python -m unittest test_publish -v
-```
-
-Do not combine those modules in one `unittest` invocation.
+Clients: plain HTTPS works everywhere; [`agenthub-cli/`](agenthub-cli/) is an optional client (`pip install -e ./agenthub-cli`, token via `AGENTHUB_TOKEN`), and [`plugin/agenthub/`](plugin/agenthub/) is a connector pack for MCP hosts with a skill that walks through staging, import, and publish. More examples in [docs/http-examples.md](docs/http-examples.md) and [docs/v16-oauth.md](docs/v16-oauth.md).
 
 ## Repository layout
 
 ```text
-app.py                 FastAPI app, MCP entry, sessions
-hubv1/                 ACL, OAuth, workspaces, upload/import, publisher
-plugin/agenthub/       Connector pack (no secrets)
-agenthub-cli/          Optional HTTPS client
-docs/                  Discovery, OAuth notes, version table
-contrib/               Example systemd unit
-test_*.py              Contract tests (isolated temp dirs)
+app.py              FastAPI app, middleware, sessions, legacy /v1, core MCP tools
+hubv1/              ACL, OAuth, REST, MCP tools, workspaces, upload/import, chat, briefings, publisher, storage
+plugin/agenthub/    MCP connector pack
+agenthub-cli/       Optional HTTPS client
+docs/               Discovery notes, OAuth, HTTP examples, version history
+contrib/            systemd unit template
+test_*.py           Contract tests (each uses its own temp root)
 ```
 
-This public tree **does not** include live `data/`, `.env`, identity tokens, GitHub credentials, operator SSH scripts, or owner library seed files.
+## Tests
 
-## Security notes
+Each test module sets `AGENTHUB_ROOT` at import time, so run one module per process:
 
-- Tokens are stored hashed. Prefixes: `oha_` access, `ohr_` refresh, `oht_` one-time upload tickets.
-- OAuth never grants `manage`. Business permission is granted OAuth scopes ∩ identity ACL.
-- Agents cannot approve their own GitHub publish requests.
-- Archives reject path traversal, `.git`, encrypted zip, and `.exe`-class members.
-- Independent backup is a separate flag and is off by default. Do not claim off-box backup from this repo.
+```bash
+for t in test_mcp_fix test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
+  python -m unittest "$t" -v || break
+done
+```
 
-If you fork this, rotate every token and secret. Treat the author's live instance as unrelated to your clone.
+## Versions
+
+Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import, 1.4.3 revision reads + `workspace_stage_file` + conflict codes, 1.4.4 Markdown MIME + clearer path errors + `schema_version` that follows the app version.
 
 ## License
 
-[MIT License](LICENSE). Copyright (c) 2026 Xiwei Chen.
-
-## Author
-
-Xiwei Chen / 陈希伟
-
-- GitHub: [sunnyspot114514](https://github.com/sunnyspot114514)
-- ORCID: [0009-0002-4200-7326](https://orcid.org/0009-0002-4200-7326)
+[MIT License](LICENSE). Maintained by [@sunnyspot114514](https://github.com/sunnyspot114514). If you deploy your own copy, generate fresh tokens and secrets for it.
