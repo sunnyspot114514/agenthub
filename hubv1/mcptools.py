@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from hubv1.acl import access_for
 from hubv1.chat import live_dates, serialize_message
@@ -18,6 +20,12 @@ from hubv1 import publisher
 
 WRITE_TEXT_MAX = 64 * 1024
 CONTEXT_MAX = 16 * 1024
+FILE_HOST_EXACT = {
+    "files.oaiusercontent.com",
+    "files.openai.com",
+    "files.x.ai",
+}
+FILE_HOST_SUFFIX = (".oaiusercontent.com", ".oaistatic.com")
 
 
 class ToolFail(Exception):
@@ -343,29 +351,113 @@ def binary_begin(p, *, name: str, bytes: int, sha256: str = "", purpose: str = "
     }
 
 
+def file_host_ok(hostname: str) -> bool:
+    host = (hostname or "").lower().rstrip(".")
+    if not host:
+        return False
+    if host in FILE_HOST_EXACT:
+        return True
+    return any(host.endswith(suf) for suf in FILE_HOST_SUFFIX)
+
+
+def _fetch_host_file(url: str) -> bytes:
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or parsed.username or parsed.password:
+        raise ToolFail("invalid", "file URL must be https without credentials")
+    if not file_host_ok(parsed.hostname or ""):
+        raise ToolFail("invalid", "file host not allowed")
+    from hubv1.oauth import _private_host
+
+    if _private_host(parsed.hostname or ""):
+        raise ToolFail("invalid", "file host not allowed")
+    max_file = flag_int("workspace_max_file_bytes", 200 * 1024 * 1024)
+
+    class _Redirect(HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            nxt = urlparse(newurl)
+            if nxt.scheme != "https" or not file_host_ok(nxt.hostname or "") or _private_host(nxt.hostname or ""):
+                raise ToolFail("invalid", "file host not allowed")
+            return HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
+
+    opener = build_opener(_Redirect)
+    req = Request(url, method="GET", headers={"User-Agent": "Agenthub-Xfer/1.4.5", "Accept": "*/*"})
+    try:
+        with opener.open(req, timeout=60) as resp:  # nosec B310 - host allowlist + private-IP guard
+            raw = resp.read(max_file + 1)
+    except ToolFail:
+        raise
+    except Exception as exc:
+        raise ToolFail("unavailable", "host file download failed") from exc
+    if len(raw) > max_file:
+        raise ToolFail("too_large")
+    if not raw:
+        raise ToolFail("invalid", "empty file")
+    return raw
+
+
+def _from_host_file(file: Any, fallback_name: str) -> tuple[bytes, str]:
+    if isinstance(file, (bytes, bytearray)):
+        if not file:
+            raise ToolFail("invalid", "empty file")
+        return bytes(file), fallback_name
+    if isinstance(file, str):
+        text = file.strip()
+        if text.startswith("https://"):
+            raw = _fetch_host_file(text)
+            name = fallback_name or Path(urlparse(text).path).name
+            return raw, name
+        raise ToolFail(
+            "invalid",
+            "host filesystem path is not readable; attach the ZIP in the file slot of workspace_stage_file",
+        )
+    if isinstance(file, dict):
+        fname = str(file.get("name") or file.get("filename") or fallback_name or "").strip()
+        data = file.get("data") or file.get("content_b64") or ""
+        url = str(file.get("download_url") or file.get("url") or "").strip()
+        if data:
+            try:
+                raw = base64.b64decode(data, validate=False)
+            except Exception as exc:
+                raise ToolFail("invalid", "file.data") from exc
+            if not raw:
+                raise ToolFail("invalid", "empty file")
+            return raw, fname
+        if url:
+            raw = _fetch_host_file(url)
+            return raw, fname or Path(urlparse(url).path).name
+        raise ToolFail(
+            "invalid",
+            "file slot empty; attach the ZIP in workspace_stage_file.file or pass declared_bytes for a PUT URL",
+        )
+    raise ToolFail("invalid", "file")
+
+
 def binary_stage(
     p,
     *,
-    name: str,
+    name: str = "",
+    file: Any = None,
     content_b64: str = "",
     declared_bytes: int = 0,
     sha256: str = "",
     purpose: str = "archive",
 ) -> dict[str, Any]:
-    """Accept host-attached file bytes, or open a PUT ticket if content is omitted."""
+    """Accept a host-attached file, optional Base64, or open a PUT ticket if content is omitted."""
     acc = _acc(p)
     _need_binary_write(acc)
     filename = (name or "").strip()
-    if not filename:
-        raise ToolFail("invalid", "name required")
-    blob = (content_b64 or "").strip()
-    if blob:
+    raw: Optional[bytes] = None
+    if file not in (None, "", {}, []):
+        raw, filename = _from_host_file(file, filename)
+    elif (content_b64 or "").strip():
         try:
-            raw = base64.b64decode(blob, validate=False)
+            raw = base64.b64decode(content_b64, validate=False)
         except Exception as exc:
             raise ToolFail("invalid", "content_b64") from exc
         if not raw:
             raise ToolFail("invalid", "empty file")
+    if raw is not None:
+        filename = filename or "upload.bin"
         if declared_bytes and int(declared_bytes) != len(raw):
             raise ToolFail("invalid", "size mismatch", details={"declared_bytes": int(declared_bytes), "bytes": len(raw)})
         try:
@@ -389,7 +481,9 @@ def binary_stage(
         }
     nbytes = int(declared_bytes or 0)
     if nbytes <= 0:
-        raise ToolFail("invalid", "content_b64 or declared_bytes required")
+        raise ToolFail("invalid", "attach file, or pass declared_bytes for a PUT URL")
+    if not filename:
+        raise ToolFail("invalid", "name required")
     return binary_begin(p, name=filename, bytes=nbytes, sha256=sha256, purpose=purpose)
 
 

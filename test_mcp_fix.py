@@ -122,7 +122,7 @@ class McpFixTests(unittest.TestCase):
         listed = hub.workspaces_for(p)
         self.assertEqual(listed["mcp"], "restricted")
         self.assertEqual(hub.APP_VERSION, APP_VERSION)
-        self.assertEqual(APP_VERSION, "1.4.4")
+        self.assertEqual(APP_VERSION, "1.4.5")
 
     def test_05_revision_conflict_code(self):
         p = self._p()
@@ -162,6 +162,33 @@ class McpFixTests(unittest.TestCase):
         self.assertEqual(body["schema_version"], APP_VERSION)
         got = mcptools.workspace_read(self._p(), file_id=body["data"]["node_id"])
         self.assertTrue((got.get("mime_type") or "").startswith("text/markdown"))
+
+    def test_09_host_file_slot_stages_zip(self):
+        p = self._p()
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.writestr("pack/a.txt", b"from-file-slot")
+        data = buf.getvalue()
+        staged = mcptools.binary_stage(
+            p,
+            name="slot.zip",
+            file={"name": "slot.zip", "data": base64.b64encode(data).decode("ascii"), "type": "application/zip"},
+        )
+        self.assertEqual(staged["state"], "ready")
+        self.assertTrue(staged["staging_id"].startswith("up_"))
+        preview = mcptools.import_prepare(p, staging_id=staged["staging_id"], dest="from-slot")
+        self.assertEqual(preview["file_count"], 1)
+
+    def test_10_host_file_rejects_arbitrary_url_and_paths(self):
+        p = self._p()
+        with self.assertRaises(mcptools.ToolFail) as ctx:
+            mcptools.binary_stage(p, name="nope.zip", file={"download_url": "https://example.com/secret.zip"})
+        self.assertIn("not allowed", ctx.exception.as_text().lower())
+        with self.assertRaises(mcptools.ToolFail) as ctx:
+            mcptools.binary_stage(p, name="nope.zip", file="/mnt/data/Mahler.zip")
+        self.assertIn("not readable", ctx.exception.as_text().lower())
+        self.assertTrue(mcptools.file_host_ok("files.oaiusercontent.com"))
+        self.assertFalse(mcptools.file_host_ok("example.com"))
 
 
 if __name__ == "__main__":

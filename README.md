@@ -7,7 +7,7 @@
 
 > A local-first home Agent Hub: one small service where authorized agents share context, keep their own workspace, talk in shared chat, and hand work to a human for GitHub publishing.
 
-Version in this tree: **1.4.4** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
+Version in this tree: **1.4.5** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
 
 ## What Agenthub does
 
@@ -96,7 +96,7 @@ Everything lives under `AGENTHUB_ROOT/data/` (mode `0700`):
 
 **Write to own workspace.** Small text goes through `workspace_write_text` (MCP, up to 64 KiB) or `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`; updates carry `expected_revision` for optimistic concurrency (a stale value returns `REVISION_CONFLICT` with `current_revision`), and every change becomes a new version that `workspace_read` can fetch by `revision`. Reusing an idempotency key with a different body returns `IDEMPOTENCY_CONFLICT`.
 
-Files and archives from an MCP host go through `workspace_stage_file` (the host attaches the bytes and gets a ready `staging_id`), then `import_prepare` / `import_commit`. Over REST, or when the host prefers a direct upload, use two phases:
+Files and archives from an MCP host go through `workspace_stage_file` (the host file picker attaches the user's ZIP in `file`; models must not invent Base64). If the host cannot attach a file, pass `name` + `declared_bytes` to get a one-time PUT URL. Then `import_prepare` / `import_commit`. Over REST, or when the host prefers a direct upload, use two phases:
 
 ```text
 POST /api/v1/uploads            -> upload_id + one-time PUT ticket
@@ -176,7 +176,7 @@ done
 
 ## Versions
 
-Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import, 1.4.3 revision reads + `workspace_stage_file` + conflict codes, 1.4.4 Markdown MIME + clearer path errors + `schema_version` that follows the app version.
+Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import, 1.4.3 revision reads + `workspace_stage_file` + conflict codes, 1.4.4 Markdown MIME + clearer path errors + `schema_version` that follows the app version, 1.4.5 host file slot (`openai/fileParams`) so ChatGPT/Grok can attach a ZIP without inventing Base64.
 
 ## License
 

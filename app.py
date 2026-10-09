@@ -716,16 +716,29 @@ def get_hub_status() -> dict[str, Any]:
     return out
 
 
-@mcp.tool
+def _stage_file_tool(fn):
+    desc = (
+        "Upload the user's ZIP or file into staging and return staging_id. "
+        "The host must attach the user file in `file` (file picker). "
+        "Models must not invent Base64. If `file` is omitted, pass name + declared_bytes to get a one-time PUT URL."
+    )
+    extra = {"name": "workspace_stage_file", "description": desc}
+    try:
+        return mcp.tool(meta={"openai/fileParams": ["file"]}, **extra)(fn)
+    except TypeError:
+        return mcp.tool(**extra)(fn)
+
+
+@_stage_file_tool
 def workspace_stage_file(
-    name: str,
+    name: str = "",
+    file: Any = None,
     content_b64: str = "",
     declared_bytes: int = 0,
     sha256: str = "",
     purpose: str = "archive",
 ) -> dict[str, Any]:
-    """Upload a user file or ZIP into your workspace and return staging_id. Host should attach the file as content_b64. Models must not invent Base64 of large archives. If content_b64 is empty, returns a one-time PUT URL instead."""
-    from fastmcp.exceptions import ToolError
+    """Upload a user file or ZIP. Host attaches `file`; models must not invent Base64."""
     from hubv1.mcptools import ToolFail, binary_stage
 
     p = mcp_require("view")
@@ -733,6 +746,7 @@ def workspace_stage_file(
         return binary_stage(
             p,
             name=name,
+            file=file,
             content_b64=content_b64,
             declared_bytes=declared_bytes,
             sha256=sha256,

@@ -7,7 +7,7 @@
 
 > 本地优先的家庭 Agent Hub：一个小服务，让已授权的 Agent 共享上下文、各自维护工作区、在共享聊天里协作，并把要发布到 GitHub 的内容交给人来批准。
 
-本仓库版本：**1.4.4** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
+本仓库版本：**1.4.5** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
 
 ## Agenthub 能做什么
 
@@ -96,7 +96,7 @@ flowchart LR
 
 **写自己的工作区。** 小段文本用 `workspace_write_text`（MCP，最多 64 KiB），或 `POST /api/v1/workspaces/me/nodes` / `PUT /api/v1/nodes/{id}`；更新时带上 `expected_revision` 做乐观并发（版本过旧时返回 `REVISION_CONFLICT` 和 `current_revision`），每次修改都会生成新版本，`workspace_read` 可以按 `revision` 读取任意版本。同一个幂等 key 配不同内容会返回 `IDEMPOTENCY_CONFLICT`。
 
-MCP 宿主上传文件和压缩包用 `workspace_stage_file`（宿主附上文件字节，直接拿到就绪的 `staging_id`），再调用 `import_prepare` / `import_commit`。走 REST 或宿主想直接上传时，用两阶段：
+MCP 宿主上传文件和压缩包用 `workspace_stage_file`（宿主文件选择器把用户 ZIP 挂到 `file` 参数；模型不要自己编 Base64）。宿主无法附文件时，传 `name` + `declared_bytes` 拿一次性 PUT 地址。然后 `import_prepare` / `import_commit`。走 REST 或宿主想直接上传时，用两阶段：
 
 ```text
 POST /api/v1/uploads            -> upload_id + 一次性 PUT 票据
@@ -176,7 +176,7 @@ done
 
 ## 版本
 
-完整沿革见 [docs/VERSIONS.md](docs/VERSIONS.md)。要点：1.0 Hub + 简报，1.2 工作区 + 发布器，1.3 URL 优先发现，1.4 OAuth 2.1 PKCE + MCP 写入 + 二进制导入，1.4.3 按修订号读取 + `workspace_stage_file` + 冲突错误码，1.4.4 Markdown MIME + 更清楚的路径错误 + `schema_version` 跟随软件版本。
+完整沿革见 [docs/VERSIONS.md](docs/VERSIONS.md)。要点：1.0 Hub + 简报，1.2 工作区 + 发布器，1.3 URL 优先发现，1.4 OAuth 2.1 PKCE + MCP 写入 + 二进制导入，1.4.3 按修订号读取 + `workspace_stage_file` + 冲突错误码，1.4.4 Markdown MIME + 更清楚的路径错误 + `schema_version` 跟随软件版本，1.4.5 宿主文件槽（`openai/fileParams`），ChatGPT/Grok 可直接附 ZIP，不必编 Base64。
 
 ## 许可证
 

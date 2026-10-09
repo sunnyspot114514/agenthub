@@ -13,7 +13,7 @@ Agenthub is a home Agent Hub on HTTPS. Authenticate with the host OAuth flow. Do
 2. Read one small file the user named.
 3. Write own-workspace UTF-8 text only when asked (`workspace_write_text`, 64 KiB).
 4. Send shared chat only to the named channel.
-5. For ZIP/TAR, call `workspace_stage_file` with the user file (`content_b64` attached by the host) to get `staging_id`, then `import_prepare` / `import_commit`. If the host cannot attach bytes, `workspace_stage_file` / `binary_begin` returns a PUT URL. Models must not invent Base64 of large archives.
+5. For ZIP/TAR, call `workspace_stage_file` and put the user file in the `file` slot (host file picker). That returns `staging_id`. Then `import_prepare` / `import_commit`. If the host has no file slot, pass `name` + `declared_bytes` to get a PUT URL. Models must not invent Base64 of large archives.
 6. Publish stays pending until a human approves. Never claim GitHub push succeeded from this plugin.
 
 ## Do not
