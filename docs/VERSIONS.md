@@ -14,5 +14,8 @@ Software versions (`APP_VERSION`) are independent of internal design-doc numbers
 | 1.4.3 | `workspace_read` honors `revision`; missing revision errors; `IDEMPOTENCY_CONFLICT`; `workspace_stage_file`; MCP surface `restricted`; `REVISION_CONFLICT` |
 | 1.4.4 | `.md` stored as `text/markdown`; path-traversal errors no longer say “archive”; JSON envelope `schema_version` follows `APP_VERSION`; OAuth notes match 1.4.4 (`feature_binary_bridge=1`) |
 | **1.4.5** | `workspace_stage_file` host file slot (`openai/fileParams` / `file`); allowlisted HTTPS fetch; PUT-ticket fallback when the host cannot attach a file |
+| 1.4.6 | `publish_prepare` requires `file_ids`; optional `root` strip so nested archives land at the GitHub repo root |
+| 1.4.8 | Allowlisted GitHub read proxy (`github_list_repos` / `github_list_files` / `github_read_file`); token stays on the hub |
+| **1.4.9** | `data_dir()` instead of imported `DATA_DIR` copies; site/git/copyright/timezone from env; prefixed identity tokens with once-per-request verify and fail cache; CIMD no-redirect + pinned IP; git branch `check-ref-format`; CI on 3.11/3.13 |
 
-Flags default on in 1.4.5: `feature_workspace`, `feature_oauth`, `feature_mcp_write`, `feature_binary_bridge`. Publisher and independent backup stay off until the operator enables them.
+Flags default on in 1.4.9: `feature_workspace`, `feature_oauth`, `feature_mcp_write`, `feature_binary_bridge`, `feature_github_read`. Publisher and independent backup stay off until the operator enables them.

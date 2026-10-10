@@ -1,3 +1,3 @@
 """Single service/API version. Hub status and /capabilities must match."""
 
-APP_VERSION = "1.4.5"
+APP_VERSION = "1.4.9"

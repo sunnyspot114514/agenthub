@@ -1,6 +1,6 @@
-# Agenthub 1.4.5 / plan v1.6
+# Agenthub 1.4.8 / plan v1.6
 
-Service version **1.4.5** includes plan v1.6 OAuth + restricted MCP (landed in 1.4.0–1.4.1). Plugin package is 0.1.0. Refresh tokens are not calendar-limited. Binary import is on. `workspace_stage_file` takes a host file slot (`openai/fileParams`).
+Service version **1.4.8** includes plan v1.6 OAuth + restricted MCP (landed in 1.4.0–1.4.1). Plugin package is 0.1.0. Refresh tokens are not calendar-limited. Binary import is on. `workspace_stage_file` takes a host file slot (`openai/fileParams`). `publish_prepare` uses only the given `file_ids` and can strip a selected directory as the GitHub repo `root`. Allowlisted GitHub read (`github_list_repos` / `github_read_file`) is on; the hub token never goes to the agent.
 
 ## Source pin
 

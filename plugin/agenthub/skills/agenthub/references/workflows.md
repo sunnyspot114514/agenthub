@@ -23,4 +23,8 @@ Use the host OAuth connection. Access tokens are short. Refresh is handled by th
 
 ## Publish
 
-`publish_prepare` then `publish_request`. Status via `publish_status`. Owner approves on the Agenthub website.
+`publish_prepare` with the exact `file_ids` the user selected. Do not omit `file_ids`; the hub will not default to the whole workspace. If the import nested a folder (for example `viterbo-mahler-research-archive/viterbo-mahler-research-archive/README.md`), pass that inner directory as `root` so `README.md` is at the GitHub repo root. Then `publish_request`. Status via `publish_status`. Owner approves on the Agenthub website.
+
+## GitHub read
+
+`github_list_repos` lists the hub allowlisted owner (today `sunnyspot114514`). `github_list_files` / `github_read_file` take `repo` as `owner/name`. The hub calls GitHub; the model must not fetch `github.com` itself. No GitHub write, issue, or secret access. Token stays on the hub.

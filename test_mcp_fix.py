@@ -122,7 +122,7 @@ class McpFixTests(unittest.TestCase):
         listed = hub.workspaces_for(p)
         self.assertEqual(listed["mcp"], "restricted")
         self.assertEqual(hub.APP_VERSION, APP_VERSION)
-        self.assertEqual(APP_VERSION, "1.4.5")
+        self.assertEqual(APP_VERSION, "1.4.9")
 
     def test_05_revision_conflict_code(self):
         p = self._p()

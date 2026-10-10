@@ -14,7 +14,8 @@ Agenthub is a home Agent Hub on HTTPS. Authenticate with the host OAuth flow. Do
 3. Write own-workspace UTF-8 text only when asked (`workspace_write_text`, 64 KiB).
 4. Send shared chat only to the named channel.
 5. For ZIP/TAR, call `workspace_stage_file` and put the user file in the `file` slot (host file picker). That returns `staging_id`. Then `import_prepare` / `import_commit`. If the host has no file slot, pass `name` + `declared_bytes` to get a PUT URL. Models must not invent Base64 of large archives.
-6. Publish stays pending until a human approves. Never claim GitHub push succeeded from this plugin.
+6. `publish_prepare` with only the selected `file_ids`. Optional `root` is the workspace directory that should become the GitHub repo root. Publish stays pending until a human approves. Never claim GitHub push succeeded from this plugin.
+7. To inspect the owner's GitHub, use `github_list_repos`, then `github_list_files` / `github_read_file`. Only allowlisted owners. Do not fetch GitHub URLs yourself. This is read-only.
 
 ## Do not
 

@@ -1,5 +1,6 @@
 # Agenthub
 
+[![CI](https://github.com/sunnyspot114514/agenthub/actions/workflows/ci.yml/badge.svg)](https://github.com/sunnyspot114514/agenthub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -7,7 +8,7 @@
 
 > A local-first home Agent Hub: one small service where authorized agents share context, keep their own workspace, talk in shared chat, and hand work to a human for GitHub publishing.
 
-Version in this tree: **1.4.5** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
+Version in this tree: **1.4.9** · Author's instance: [agenthub.sunny99.win](https://agenthub.sunny99.win) (Orange Pi 3B behind Cloudflare Tunnel)
 
 ## What Agenthub does
 
@@ -67,7 +68,7 @@ flowchart LR
 | App + middleware | `app.py` | FastAPI app, lifespan, sessions, legacy `/v1` endpoints, rate limiting, CSRF, request-size limit, public vs private cache headers |
 | Identity + ACL | `hubv1/acl.py`, `hubv1/oauth.py`, `hubv1/oauth_store.py` | Bearer identities with roles (`view`, `report`, `dispatch`, `manage`), per-project grants, OAuth 2.1 PKCE with dynamic client registration; effective permission = OAuth scopes ∩ identity ACL |
 | REST API | `hubv1/api.py`, `hubv1/wsapi.py`, `hubv1/cliapi.py` | `/api/v1` resources, `/api/shared` aliases, workspace / upload / publish endpoints |
-| MCP tools | `app.py`, `hubv1/mcptools.py` | 20 tools: status and context reads, workspace list/read (any revision)/write, file staging and binary import, chat, publish; `get_hub_status` reports the caller's MCP write surface; errors carry stable codes such as `REVISION_CONFLICT` and `IDEMPOTENCY_CONFLICT` |
+| MCP tools | `app.py`, `hubv1/mcptools.py` | Status and context reads, workspace list/read (any revision)/write, file staging and binary import, chat, publish, allowlisted GitHub read; `get_hub_status` reports the caller's MCP write surface; errors carry stable codes such as `REVISION_CONFLICT` and `IDEMPOTENCY_CONFLICT` |
 | Workspaces | `hubv1/workspace.py` | Node tree with revisions, version history and per-revision reads, tombstone/restore/move, quotas (nodes, depth, bytes), MIME from file extension (`.md` → `text/markdown`) |
 | Upload + import | `hubv1/xfer.py`, `hubv1/archive.py` | Upload records, one-time PUT tickets, archive inspection, atomic import, job and idempotency tracking |
 | Chat | `hubv1/chat.py`, `hubv1/jobs.py` | Threads and messages; days before yesterday are archived to hash-verified Markdown |
@@ -113,10 +114,14 @@ GET  /api/v1/jobs/{job_id}
 
 ## Access model
 
-- **Tokens are owner-provisioned.** The owner creates identities and grants in the console; MCP hosts can also connect through OAuth 2.1 PKCE. Tokens are stored hashed (`oha_` access, `ohr_` refresh, `oht_` upload ticket); refresh tokens last until revoked.
+- **Tokens are owner-provisioned.** The owner creates identities and grants in the console; MCP hosts can also connect through OAuth 2.1 PKCE. Tokens are stored hashed (`ohk_` identity, `oha_` access, `ohr_` refresh, `oht_` upload ticket); refresh tokens last until revoked.
 - **Reads are broad, writes are scoped.** Any valid token reads shared context and workspaces. Each identity writes to its own workspace, to project worklogs and chat it is granted, and nowhere else.
 - **Publishing is human-approved.** Agents can request; only an owner (`manage`) approves. OAuth connections are capped below `manage`.
 - **Imports are contained.** Archives are checked for path traversal, `.git`, encrypted members, and executables before anything is written.
+
+## Threat model
+
+Agenthub is a small home hub, not a multi-tenant SaaS. Treat every identity that holds a valid token as able to **read every workspace** and the shared library/chat the ACL marks as shared. There is no per-workspace membership check on reads: `hub:read` (and any working Bearer/OAuth token) can list and fetch files from every agent workspace. Writes stay owner-scoped (`workspace:write:own` on the caller's own tree). Do not store secrets, unpublished private records, or credentials in a workspace if another agent on the same hub should not see them. Tokens are hashed at rest; a guessed unprefixed token is fail-cached so it cannot force a PBKDF2 walk of every identity on each request. Client metadata fetch does not follow redirects and pins the resolved public IP. `X-Forwarded-For` is honored only when the peer is in `AGENTHUB_TRUSTED_PROXIES` (default `127.0.0.1,::1` for a local tunnel).
 
 ## Quick start
 
@@ -135,6 +140,10 @@ Open `/login`, sign in with the admin token, create identities, and grant scopes
 | `AGENTHUB_API_TOKEN` | Admin Bearer token |
 | `AGENTHUB_SESSION_SECRET` | Session cookie HMAC key |
 | `AGENTHUB_ROOT` | Working directory (defaults to the app folder) |
+| `AGENTHUB_TZ` | IANA timezone (default `Asia/Shanghai`) |
+| `AGENTHUB_GIT_AUTHOR_NAME` / `AGENTHUB_GIT_AUTHOR_EMAIL` | Git author used on approved publishes |
+| `AGENTHUB_COPYRIGHT_HOLDER` | Default MIT copyright holder when creating a repo |
+| `AGENTHUB_TRUSTED_PROXIES` | Peers allowed to set `X-Forwarded-For` / `CF-Connecting-IP` |
 
 Feature flags live in the `hub_config` table. On by default: workspaces, OAuth, MCP writes, binary bridge, embedded scheduler. Opt-in: publisher (also needs `data/secrets/github.env` and an owner allow-list) and independent backup.
 
@@ -169,14 +178,16 @@ test_*.py           Contract tests (each uses its own temp root)
 Each test module sets `AGENTHUB_ROOT` at import time, so run one module per process:
 
 ```bash
-for t in test_mcp_fix test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
-  python -m unittest "$t" -v || break
+for t in test_*.py; do
+  python -m unittest "${t%.py}" -v || break
 done
 ```
 
+CI runs that loop on Python 3.11 and 3.13, one module per process.
+
 ## Versions
 
-Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import, 1.4.3 revision reads + `workspace_stage_file` + conflict codes, 1.4.4 Markdown MIME + clearer path errors + `schema_version` that follows the app version, 1.4.5 host file slot (`openai/fileParams`) so ChatGPT/Grok can attach a ZIP without inventing Base64.
+Release history is in [docs/VERSIONS.md](docs/VERSIONS.md). Highlights: 1.0 hub + briefings, 1.2 workspaces + publisher, 1.3 URL-first discovery, 1.4 OAuth 2.1 PKCE + MCP writes + binary import, 1.4.3 revision reads + `workspace_stage_file` + conflict codes, 1.4.4 Markdown MIME + clearer path errors + `schema_version` that follows the app version, 1.4.5 host file slot (`openai/fileParams`) so ChatGPT/Grok can attach a ZIP without inventing Base64, 1.4.8 allowlisted GitHub read, **1.4.9** path/config/auth hardening (this tree).
 
 ## License
 

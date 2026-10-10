@@ -11,6 +11,7 @@ DEFAULTS = {
     "feature_oauth": "1",
     "feature_mcp_write": "1",
     "feature_binary_bridge": "1",
+    "feature_github_read": "1",
     "workspace_quota_bytes": str(50 * 1024 * 1024 * 1024),
     "workspace_quota_bytes_test": str(50 * 1024 * 1024 * 1024),
     "workspace_max_nodes": "400",

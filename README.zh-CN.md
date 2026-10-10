@@ -1,5 +1,6 @@
 # Agenthub
 
+[![CI](https://github.com/sunnyspot114514/agenthub/actions/workflows/ci.yml/badge.svg)](https://github.com/sunnyspot114514/agenthub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
@@ -7,7 +8,7 @@
 
 > 本地优先的家庭 Agent Hub：一个小服务，让已授权的 Agent 共享上下文、各自维护工作区、在共享聊天里协作，并把要发布到 GitHub 的内容交给人来批准。
 
-本仓库版本：**1.4.5** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
+本仓库版本：**1.4.9** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
 
 ## Agenthub 能做什么
 
@@ -113,10 +114,14 @@ GET  /api/v1/jobs/{job_id}
 
 ## 访问模型
 
-- **Token 由所有者发放。** 所有者在控制台创建身份和授权；MCP 宿主也可以通过 OAuth 2.1 PKCE 连接。Token 只存哈希（`oha_` 访问、`ohr_` 刷新、`oht_` 上传票据），刷新令牌持续有效直到撤销。
+- **Token 由所有者发放。** 所有者在控制台创建身份和授权；MCP 宿主也可以通过 OAuth 2.1 PKCE 连接。Token 只存哈希（`ohk_` 身份、`oha_` 访问、`ohr_` 刷新、`oht_` 上传票据），刷新令牌持续有效直到撤销。
 - **读取范围宽，写入按范围。** 有效 token 可以读共享上下文和各工作区；每个身份写自己的工作区，以及被授权项目的工作日志和聊天。
 - **发布由人批准。** Agent 提交申请，所有者（`manage`）批准；OAuth 连接的权限上限低于 `manage`。
 - **导入有边界。** 写入前先检查压缩包里的路径穿越、`.git`、加密成员和可执行文件。
+
+## 威胁模型
+
+Agenthub 是家庭小 Hub，不是多租户 SaaS。任何持有有效 token 的身份都能**读取全部工作区**以及 ACL 标为共享的资料库/聊天。读取不做工作区成员校验：`hub:read`（以及能用的 Bearer/OAuth token）可以列出并拉取每个 Agent 工作区里的文件。写入仍按所有者范围（`workspace:write:own` 只写自己的树）。不要把密钥、未公开的私密记录或其他 Agent 不该看到的内容放进工作区。Token 落盘只存哈希；猜错的无前缀 token 会短时缓存失败，避免每次请求对所有身份做 PBKDF2。拉取 OAuth 客户端元数据不跟随重定向，并把连接钉在已校验的公网 IP。只有对端在 `AGENTHUB_TRUSTED_PROXIES` 里时才信任 `X-Forwarded-For`（默认 `127.0.0.1,::1`，适配本机隧道）。
 
 ## 快速开始
 
@@ -135,6 +140,10 @@ uvicorn app:app --host 127.0.0.1 --port 8000
 | `AGENTHUB_API_TOKEN` | 管理员 Bearer token |
 | `AGENTHUB_SESSION_SECRET` | 会话 Cookie 的 HMAC 密钥 |
 | `AGENTHUB_ROOT` | 工作目录（默认是应用目录） |
+| `AGENTHUB_TZ` | IANA 时区（默认 `Asia/Shanghai`） |
+| `AGENTHUB_GIT_AUTHOR_NAME` / `AGENTHUB_GIT_AUTHOR_EMAIL` | 批准发布时使用的 git 作者 |
+| `AGENTHUB_COPYRIGHT_HOLDER` | 新建仓库时的默认 MIT 版权人 |
+| `AGENTHUB_TRUSTED_PROXIES` | 允许设置 `X-Forwarded-For` / `CF-Connecting-IP` 的对端 |
 
 功能开关保存在 `hub_config` 表。默认开启：工作区、OAuth、MCP 写入、二进制桥、内置调度器。按需开启：发布器（还需要 `data/secrets/github.env` 和目标账号白名单）和独立备份。
 
@@ -169,14 +178,16 @@ test_*.py           契约测试（各自使用独立临时目录）
 每个测试模块在 import 时设置 `AGENTHUB_ROOT`，所以每个模块单独一个进程运行：
 
 ```bash
-for t in test_mcp_fix test_binary test_oauth test_v15 test_v14 test_v12 test_v10 test_publish; do
-  python -m unittest "$t" -v || break
+for t in test_*.py; do
+  python -m unittest "${t%.py}" -v || break
 done
 ```
 
+CI 会在 Python 3.11 和 3.13 上按这个循环跑，每个测试模块单独一个进程。
+
 ## 版本
 
-完整沿革见 [docs/VERSIONS.md](docs/VERSIONS.md)。要点：1.0 Hub + 简报，1.2 工作区 + 发布器，1.3 URL 优先发现，1.4 OAuth 2.1 PKCE + MCP 写入 + 二进制导入，1.4.3 按修订号读取 + `workspace_stage_file` + 冲突错误码，1.4.4 Markdown MIME + 更清楚的路径错误 + `schema_version` 跟随软件版本，1.4.5 宿主文件槽（`openai/fileParams`），ChatGPT/Grok 可直接附 ZIP，不必编 Base64。
+完整沿革见 [docs/VERSIONS.md](docs/VERSIONS.md)。要点：1.0 Hub + 简报，1.2 工作区 + 发布器，1.3 URL 优先发现，1.4 OAuth 2.1 PKCE + MCP 写入 + 二进制导入，1.4.3 按修订号读取 + `workspace_stage_file` + 冲突错误码，1.4.4 Markdown MIME + 更清楚的路径错误 + `schema_version` 跟随软件版本，1.4.5 宿主文件槽（`openai/fileParams`），ChatGPT/Grok 可直接附 ZIP，不必编 Base64，1.4.8 白名单 GitHub 只读，**1.4.9** 路径/配置/鉴权加固（本树）。
 
 ## 许可证
 
