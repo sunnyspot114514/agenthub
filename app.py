@@ -34,7 +34,6 @@ ROOT = Path(os.environ.get("AGENTHUB_ROOT", Path(__file__).resolve().parent))
 load_dotenv(ROOT / ".env")
 
 DATA_DIR = ROOT / "data"
-DATA_DIR.mkdir(mode=0o700, exist_ok=True)
 DB_PATH = Path(os.environ.get("AGENTHUB_DB", str(DATA_DIR / "hub.db")))
 
 from hubv1 import timeutil as hubtime
@@ -44,11 +43,12 @@ from hubv1.pages import access_page, agent_workspaces_page, chat_page, library_p
 from hubv1.store import connect as v1_connect
 from hubv1.store import init_v1, touch_seen
 from hubv1.align import ensure_due_for_identities
+from hubv1.settings import public_host as configured_public_host, public_origin as configured_public_origin, timezone_name, trusted_proxies
 from hubv1.version import APP_VERSION
 
 APP_NAME = "Agenthub"
-PUBLIC_HOST = os.getenv("AGENTHUB_PUBLIC_HOST", "agenthub.sunny99.win")
-PUBLIC_ORIGIN = f"https://{PUBLIC_HOST}"
+PUBLIC_HOST = configured_public_host()
+PUBLIC_ORIGIN = configured_public_origin()
 API_TOKEN = os.getenv("AGENTHUB_API_TOKEN", "")
 GITHUB_WEBHOOK_SECRET = os.getenv("GITHUB_WEBHOOK_SECRET", "")
 SESSION_SECRET = os.getenv("AGENTHUB_SESSION_SECRET", "")
@@ -64,6 +64,10 @@ LOG_KEEP_DAYS = 14
 LOG_MAX_ROWS = 5000
 PBKDF2_ROUNDS = 120_000
 TASK_TYPES = {"note"}
+IDENTITY_TOKEN_PREFIX = "ohk_"
+TOKEN_FAIL_TTL = 15.0
+TOKEN_OK_TTL = 30.0
+RATE_MAX_KEYS = 4096
 
 ALLOWED_ORIGINS = {PUBLIC_ORIGIN, "http://127.0.0.1:8000", "http://localhost:8000"}
 STARTED = time.time()
@@ -71,6 +75,7 @@ STARTED = time.time()
 _public_cache: dict[str, Any] = {"at": 0.0, "data": None, "error": None}
 _rate: dict[str, deque] = defaultdict(deque)
 _token_cache: dict[str, tuple[str, float]] = {}
+_token_fail: dict[str, float] = {}
 
 
 def utcnow() -> datetime:
@@ -97,6 +102,7 @@ def ensure_session_secret() -> str:
 
 @contextmanager
 def db() -> sqlite3.Connection:
+    Path(DB_PATH).parent.mkdir(mode=0o700, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
     try:
@@ -118,6 +124,7 @@ def init_db() -> None:
                 public_alias TEXT NOT NULL DEFAULT '',
                 token_salt TEXT NOT NULL,
                 token_hash TEXT NOT NULL,
+                token_id TEXT NOT NULL DEFAULT '',
                 roles TEXT NOT NULL,
                 expires_at TEXT,
                 revoked_at TEXT,
@@ -216,6 +223,12 @@ def migrate_legacy(conn: sqlite3.Connection) -> None:
             )
             """
         )
+    ident_cols = {r[1] for r in conn.execute("PRAGMA table_info(identities)").fetchall()}
+    if ident_cols and "token_id" not in ident_cols:
+        conn.execute("ALTER TABLE identities ADD COLUMN token_id TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_identities_token_id ON identities(token_id) WHERE token_id != ''"
+    )
     msg_cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
     if msg_cols and "owner_id" not in msg_cols:
         conn.execute("DROP TABLE messages")
@@ -243,22 +256,52 @@ def new_token_parts(token: str) -> tuple[str, str]:
     return salt, hash_token(token, salt)
 
 
+def identity_token_id(token: str) -> str:
+    if not token.startswith(IDENTITY_TOKEN_PREFIX):
+        return ""
+    rest = token[len(IDENTITY_TOKEN_PREFIX) :]
+    tid, sep, secret = rest.partition("_")
+    if not sep or not tid or not secret:
+        return ""
+    if len(tid) < 8 or any(c not in "0123456789abcdef" for c in tid):
+        return ""
+    return tid
+
+
+def mint_identity_token() -> str:
+    return f"{IDENTITY_TOKEN_PREFIX}{secrets.token_hex(8)}_{secrets.token_urlsafe(24)}"
+
+
+def _token_key(token: str) -> str:
+    return hmac.new(ensure_session_secret().encode(), token.encode(), hashlib.sha256).hexdigest()
+
+
+def _remember_token_fail(cache_key: str, now: float) -> None:
+    _token_fail[cache_key] = now + TOKEN_FAIL_TTL
+    if len(_token_fail) > 4096:
+        oldest = sorted(_token_fail.items(), key=lambda kv: kv[1])[:2048]
+        for key, _ in oldest:
+            _token_fail.pop(key, None)
+
+
 def bootstrap_admin() -> None:
     if not API_TOKEN:
         raise RuntimeError("AGENTHUB_API_TOKEN missing; refusing to start unprotected")
     salt, digest = new_token_parts(API_TOKEN)
     now = utcnow_iso()
+    token_id = identity_token_id(API_TOKEN)
     with db() as conn:
         row = conn.execute("SELECT id, token_salt FROM identities WHERE id='admin'").fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO identities(id, kind, public_alias, token_salt, token_hash, roles, expires_at, revoked_at, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO identities(id, kind, public_alias, token_salt, token_hash, token_id, roles, expires_at, revoked_at, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (
                     "admin",
                     "admin",
                     "",
                     salt,
                     digest,
+                    token_id,
                     json.dumps(["view", "dispatch", "manage", "report"]),
                     None,
                     None,
@@ -267,7 +310,10 @@ def bootstrap_admin() -> None:
             )
         else:
             digest = hash_token(API_TOKEN, row["token_salt"])
-            conn.execute("UPDATE identities SET token_hash=?, revoked_at=NULL WHERE id='admin'", (digest,))
+            conn.execute(
+                "UPDATE identities SET token_hash=?, token_id=?, revoked_at=NULL WHERE id='admin'",
+                (digest, token_id),
+            )
 
 
 def prune_old() -> None:
@@ -349,23 +395,36 @@ def principal_from_token(token: str) -> Optional[Principal]:
         p.oauth_scopes = set(rec.get("scopes") or [])
         p.oauth_client_id = rec.get("client_id")
         return p
-    cache_key = hmac.new(ensure_session_secret().encode(), token.encode(), hashlib.sha256).hexdigest()
-    cached = _token_cache.get(cache_key)
+    cache_key = _token_key(token)
     now = time.time()
+    fail_until = _token_fail.get(cache_key, 0.0)
+    if fail_until > now:
+        return None
+    cached = _token_cache.get(cache_key)
     if cached and cached[1] > now:
         with db() as conn:
             row = conn.execute("SELECT * FROM identities WHERE id=?", (cached[0],)).fetchone()
         if row and _identity_usable(row):
             return Principal(row)
-    with db() as conn:
-        rows = conn.execute("SELECT * FROM identities").fetchall()
+    token_id = identity_token_id(token)
+    if token_id:
+        with db() as conn:
+            row = conn.execute("SELECT * FROM identities WHERE token_id=?", (token_id,)).fetchone()
+        rows = [row] if row else []
+    else:
+        with db() as conn:
+            rows = conn.execute(
+                "SELECT * FROM identities WHERE token_id IS NULL OR token_id=''"
+            ).fetchall()
     for row in rows:
-        if not _identity_usable(row):
+        if not row or not _identity_usable(row):
             continue
         digest = hash_token(token, row["token_salt"])
         if hmac.compare_digest(digest, row["token_hash"]):
-            _token_cache[cache_key] = (row["id"], now + 30)
+            _token_cache[cache_key] = (row["id"], now + TOKEN_OK_TTL)
+            _token_fail.pop(cache_key, None)
             return Principal(row)
+    _remember_token_fail(cache_key, now)
     return None
 
 
@@ -407,14 +466,30 @@ def principal_from_http(
 
 
 def client_ip(request: Request) -> str:
-    forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
-    return (request.client.host if request.client else "unknown")[:64]
+    peer = (request.client.host if request.client else "unknown")[:64]
+    if peer in trusted_proxies():
+        forwarded = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "")
+        if forwarded:
+            return forwarded.split(",")[0].strip()[:64]
+    return peer
+
+
+def _prune_rate(now: float) -> None:
+    if len(_rate) <= RATE_MAX_KEYS:
+        return
+    stale = [key for key, q in _rate.items() if not q or now - q[-1] > 60]
+    for key in stale:
+        _rate.pop(key, None)
+    extra = len(_rate) - RATE_MAX_KEYS
+    if extra > 0:
+        oldest = sorted(_rate.items(), key=lambda kv: kv[1][-1] if kv[1] else 0)[:extra]
+        for key, _ in oldest:
+            _rate.pop(key, None)
 
 
 def rate_ok(ip: str, limit: int) -> bool:
     now = time.time()
+    _prune_rate(now)
     q = _rate[ip]
     while q and now - q[0] > 60:
         q.popleft()
@@ -513,7 +588,7 @@ def compute_public_summary() -> dict[str, Any]:
         "heartbeat_interval_seconds": HEARTBEAT_INTERVAL,
         "offline_after_seconds": OFFLINE_AFTER,
         "as_of": now.isoformat(),
-        "timezone": "Asia/Shanghai",
+        "timezone": timezone_name(),
         "work_date": today,
     }
 
@@ -650,9 +725,10 @@ def mcp_principal() -> Optional[Principal]:
     """Same Bearer/session identity as REST. FastMCP's default header helper strips Authorization."""
     request = _mcp_http_request()
     if request is not None:
-        p = getattr(getattr(request, "state", None), "principal", None)
-        if isinstance(p, Principal):
-            return p
+        state = getattr(request, "state", None)
+        if state is not None and hasattr(state, "principal"):
+            p = state.principal
+            return p if isinstance(p, Principal) else None
         p = principal_from_http(request.headers.get("authorization"), request.headers.get("cookie"))
         if p is not None:
             return p
@@ -836,7 +912,7 @@ def get_access_index() -> dict[str, Any]:
         ]
     return {
         "work_date": day,
-        "timezone": "Asia/Shanghai",
+        "timezone": timezone_name(),
         "collab_profile": "/api/v1/profiles/collab",
         "projects": projects,
         "writable_projects": writable,
@@ -1031,7 +1107,11 @@ def get_principal(
     request: Request,
     authorization: Optional[str] = Header(default=None),
 ) -> Optional[Principal]:
-    return principal_from_http(authorization, request.headers.get("cookie"))
+    if hasattr(request.state, "principal"):
+        return request.state.principal
+    p = principal_from_http(authorization, request.headers.get("cookie"))
+    request.state.principal = p
+    return p
 
 
 def require(*roles: str):
@@ -1391,7 +1471,7 @@ def home() -> str:
     <section class="card" style="margin-top:16px">
       <h2 style="margin:0 0 8px;font-size:1.1rem">近 7 天工作日志</h2>
       {trend_html}
-      <p class="muted">口径：按北京时间 Asia/Shanghai 的工作日统计日志条数。网页访问、API 查询、MCP 握手不计入。心跳间隔 {HEARTBEAT_INTERVAL}s，超过 {OFFLINE_AFTER}s 视为过期。</p>
+      <p class="muted">口径：按北京时间 {timezone_name()} 的工作日统计日志条数。网页访问、API 查询、MCP 握手不计入。心跳间隔 {HEARTBEAT_INTERVAL}s，超过 {OFFLINE_AFTER}s 视为过期。</p>
       <p class="muted">更新时间 {stamp} · 业务日 {html.escape(s.get('work_date') or '')}</p>
     </section>
     <p style="margin-top:18px"><a href="/agent">持 token 的 Agent 接入</a> · <a href="/about">公开简介</a> · <a href="/login">进入控制台</a></p>
