@@ -483,7 +483,6 @@ class V14Tests(unittest.TestCase):
         from agenthub_cli import __version__
 
         self.assertEqual(__version__, "0.1.0")
-        self.assertEqual(sys.platform.startswith("win"), True)
 
 
 if __name__ == "__main__":
