@@ -140,6 +140,92 @@ class PublishTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text[:300])
         self.assertIs(r.json()["ok"], True)
 
+    def test_06_prepare_uses_file_ids_only_and_strips_root(self):
+        from hubv1 import mcptools
+
+        p = hub.principal_from_token(self.tok_a)
+        keep = mcptools.workspace_write_text(
+            p,
+            relative_path="viterbo-mahler-research-archive/viterbo-mahler-research-archive/README.md",
+            text="# mahler",
+        )
+        nested = mcptools.workspace_write_text(
+            p,
+            relative_path="viterbo-mahler-research-archive/viterbo-mahler-research-archive/src/note.txt",
+            text="note",
+        )
+        extra = mcptools.workspace_write_text(p, relative_path="connection-test.md", text="probe")
+        plan = mcptools.publish_prepare(
+            p,
+            file_ids=[keep["file_id"], nested["file_id"]],
+            repo="sunnyspot114514/viterbo-mahler-research-archive",
+            root="viterbo-mahler-research-archive/viterbo-mahler-research-archive",
+        )
+        self.assertEqual(plan["file_count"], 2)
+        paths = {item["path"] for item in plan["files"]}
+        self.assertEqual(paths, {"README.md", "src/note.txt"})
+        self.assertTrue(all("connection-test" not in item["path"] for item in plan["files"]))
+        self.assertTrue(all(item["path"] != extra.get("path") for item in plan["files"]))
+        rest = self.client.post(
+            "/api/v1/publish/plans",
+            headers=auth(self.tok_a),
+            json={
+                "file_ids": [keep["file_id"]],
+                "root": "viterbo-mahler-research-archive/viterbo-mahler-research-archive",
+                "repo": "sunnyspot114514/viterbo-mahler-research-archive",
+                "mode": "create",
+                "visibility": "public",
+                "license": "MIT",
+                "copyright_holder": "sunnyspot114514",
+            },
+        )
+        self.assertEqual(rest.status_code, 201, rest.text[:400])
+        self.assertEqual(rest.json()["data"]["file_count"], 1)
+        self.assertEqual(rest.json()["data"]["files"][0]["path"], "README.md")
+        empty = self.client.post(
+            "/api/v1/publish/plans",
+            headers=auth(self.tok_a),
+            json={"repo": "sunnyspot114514/should-not-dump-workspace", "mode": "create", "visibility": "public"},
+        )
+        self.assertEqual(empty.status_code, 422, empty.text[:400])
+        with self.assertRaises(mcptools.ToolFail) as ctx:
+            mcptools.publish_prepare(p, file_ids=[], repo="sunnyspot114514/nope")
+        self.assertEqual(ctx.exception.code, "invalid")
+
+    def test_07_git_env_keeps_writable_config(self):
+        from hubv1 import publisher
+
+        cfg_dir = Path(TMP) / "gh-config-test"
+        cfg_dir.mkdir(exist_ok=True)
+        env = publisher._gh_env("test-not-a-real-token", cfg_dir)
+        self.assertNotEqual(env.get("GIT_CONFIG_GLOBAL"), os.devnull)
+        self.assertTrue(Path(env["GIT_CONFIG_GLOBAL"]).is_file())
+        self.assertEqual(env.get("GIT_TERMINAL_PROMPT"), "0")
+
+    def test_08_branch_name_and_nested_paths(self):
+        from hubv1 import publisher
+
+        self.assertTrue(publisher.valid_git_branch("main"))
+        self.assertTrue(publisher.valid_git_branch("feat/ok-name"))
+        self.assertFalse(publisher.valid_git_branch("-bad"))
+        self.assertFalse(publisher.valid_git_branch("a..b"))
+        self.assertFalse(publisher.valid_git_branch("heads/foo.lock"))
+        created = self.json("POST", "/api/v1/workspaces/me/nodes", self.tok_a, {"name": "branch.md", "kind": "file", "body": "x"}, expected=201).json()["data"]
+        bad = self.json(
+            "POST",
+            "/api/v1/publish-requests",
+            self.tok_a,
+            {"node_ids": [created["node_id"]], "target_owner": "sunnyspot114514", "repo": "agenthub-demo-pub", "create_repo": True, "branch": "evil..name"},
+        )
+        self.assertIn(bad.status_code, {400, 422})
+        staging = publisher._write_staging(
+            [{"name": "docs/nested/readme.md", "data": b"# nested\n"}],
+            "sunnyspot114514",
+        )
+        nested = staging / "docs" / "nested" / "readme.md"
+        self.assertTrue(nested.is_file(), "publish staging must keep subdirectory paths")
+        self.assertFalse((staging / "readme.md").is_file())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

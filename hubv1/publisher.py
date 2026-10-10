@@ -1,6 +1,7 @@
 """Controlled GitHub publish. Agents request; only admin approves. Token never goes to workspace/chat/logs."""
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -11,13 +12,29 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hubv1.flags import flag
-from hubv1.store import DATA_DIR, audit, cfg, connect, dumps, ensure_dirs, loads, new_id, sha256_bytes
+from hubv1.settings import copyright_holder_default, git_author_email, git_author_name, license_year
+from hubv1.store import audit, cfg, connect, data_dir, dumps, ensure_dirs, loads, new_id, sha256_bytes
 from hubv1.timeutil import now_iso
 from hubv1 import workspace as ws
 
 REPO_RE = re.compile(r"^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}$")
 SECRET_RE = re.compile(rb"gho_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}")
 WORKFLOW_RE = re.compile(r"(^|/)\.github/workflows/", re.I)
+BRANCH_BAD = re.compile(r"[\x00-\x20~^:?*\[\\]|@{")
+
+
+def valid_git_branch(name: str) -> bool:
+    """Match `git check-ref-format --branch` well enough to reject unsafe refs."""
+    if not name or name in {".", "..", "@"} or len(name) > 255:
+        return False
+    if name.startswith("-") or name.startswith("/") or name.endswith("/") or name.endswith("."):
+        return False
+    if ".." in name or "//" in name or BRANCH_BAD.search(name):
+        return False
+    for part in name.split("/"):
+        if not part or part.startswith(".") or part.endswith(".") or part.endswith(".lock"):
+            return False
+    return True
 
 
 def publisher_enabled() -> bool:
@@ -26,7 +43,7 @@ def publisher_enabled() -> bool:
 
 def secrets_dir() -> Path:
     ensure_dirs()
-    path = DATA_DIR / "secrets"
+    path = data_dir() / "secrets"
     path.mkdir(mode=0o700, exist_ok=True)
     return path
 
@@ -97,6 +114,13 @@ def _set_state(conn, request_id: str, state: str, result: Optional[dict] = None)
     )
 
 
+def _norm_publish_name(path: str) -> str:
+    rel = (path or "").replace("\\", "/").strip("/")
+    if not rel or rel in {".", ".."} or ".." in Path(rel).parts:
+        return ""
+    return rel
+
+
 def _own_workspace_id(agent_id: str) -> Optional[str]:
     mine = ws.workspace_of(agent_id)
     return mine["workspace_id"] if mine else None
@@ -135,6 +159,7 @@ def create_request(
     branch: str,
     create_repo: bool,
     request_id: str = "",
+    publish_paths: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     if not publisher_enabled():
         raise PermissionError("publisher disabled")
@@ -148,9 +173,18 @@ def create_request(
         raise PermissionError("owner not on allowlist")
     if not REPO_RE.fullmatch(name) or name in {".", ".."}:
         raise ValueError("bad repo name")
+    br = (branch or "main").strip()
+    if not valid_git_branch(br):
+        raise ValueError("bad branch name")
     if create_repo and not copyright_holder():
         raise PermissionError("MIT copyright holder not configured")
     files = _validate_nodes(acc, node_ids)
+    if publish_paths:
+        for item in files:
+            override = _norm_publish_name(publish_paths.get(item["node_id"]) or "")
+            if not override:
+                raise ValueError("missing publish path")
+            item["name"] = override
     snap = {
         "node_ids": [f["node_id"] for f in files],
         "version_ids": [f["version_id"] for f in files],
@@ -174,7 +208,7 @@ def create_request(
                 dumps(snap),
                 owner,
                 name,
-                branch or "main",
+                br,
                 1 if create_repo else 0,
                 snap["sha256"],
                 "awaiting_approval",
@@ -232,9 +266,7 @@ def decide(acc, request_id: str, *, approve: bool, request_id_http: str = "") ->
 
 
 def gh_bin() -> str:
-    import hubv1.store as store
-
-    for p in (store.DATA_DIR.parent / "bin" / "gh", Path("/usr/bin/gh"), Path("/usr/local/bin/gh")):
+    for p in (data_dir().parent / "bin" / "gh", Path("/usr/bin/gh"), Path("/usr/local/bin/gh")):
         if p.is_file() and os.access(p, os.X_OK):
             return str(p)
     found = shutil.which("gh")
@@ -248,7 +280,14 @@ def _gh_env(token: str, config_dir: Path) -> dict[str, str]:
     env["GH_CONFIG_DIR"] = str(config_dir)
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
-    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    gitconfig = config_dir / "gitconfig"
+    if not gitconfig.is_file():
+        gitconfig.write_text("", encoding="utf-8")
+    try:
+        os.chmod(gitconfig, 0o600)
+    except Exception:
+        pass
+    env["GIT_CONFIG_GLOBAL"] = str(gitconfig)
     env.pop("GIT_ASKPASS", None)
     env.pop("GH_ENTERPRISE_TOKEN", None)
     return env
@@ -258,15 +297,16 @@ def _run(cmd: list[str], *, cwd: Optional[Path], env: dict[str, str], timeout: i
     proc = subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, capture_output=True, timeout=timeout, check=False)
     out = proc.stdout.decode("utf-8", "replace")
     err = proc.stderr.decode("utf-8", "replace")
-    tok = env.get("GH_TOKEN") or ""
-    if tok:
-        out = out.replace(tok, "[redacted]")
-        err = err.replace(tok, "[redacted]")
+    secrets = [env.get("GH_TOKEN") or "", env.get("_AH_REDACT") or ""]
+    for secret in secrets:
+        if secret:
+            out = out.replace(secret, "[redacted]")
+            err = err.replace(secret, "[redacted]")
     return proc.returncode, out, err
 
 
 def _write_staging(files: list[dict[str, Any]], holder: str) -> Path:
-    root = DATA_DIR / "publish-staging"
+    root = data_dir() / "publish-staging"
     root.mkdir(mode=0o700, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix="pub-", dir=str(root)))
     os.chmod(staging, 0o700)
@@ -283,7 +323,7 @@ def _write_staging(files: list[dict[str, Any]], holder: str) -> Path:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(item["data"])
         os.chmod(dest, 0o600)
-    (staging / "LICENSE").write_text(mit_text("2026", holder), encoding="utf-8")
+    (staging / "LICENSE").write_text(mit_text(license_year(), holder), encoding="utf-8")
     os.chmod(staging / "LICENSE", 0o600)
     return staging
 
@@ -306,8 +346,9 @@ def execute_one(row: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "reason": "no_holder"}
     snap = loads(row["source_json"] or "{}", {})
     node_ids = snap.get("node_ids") or []
+    names = snap.get("names") or []
     files = []
-    for nid in node_ids:
+    for index, nid in enumerate(node_ids):
         node = ws.get_node(nid)
         if not node:
             with connect() as conn:
@@ -318,7 +359,8 @@ def execute_one(row: dict[str, Any]) -> dict[str, Any]:
                 _set_state(conn, row["request_id"], "failed", {"reason": "source changed after approval; re-review"})
             return {"ok": False, "reason": "snapshot_changed"}
         data, mime, fname = ws.file_payload(nid)
-        files.append({"name": fname, "data": data})
+        pub_name = _norm_publish_name(names[index] if index < len(names) else "") or ws.node_relpath(nid) or fname
+        files.append({"name": pub_name, "data": data})
     result = loads(row.get("result_json") or "", {}) or {}
     owner, repo, branch = row["target_owner"], row["repo"], row["branch"] or "main"
     config_dir = secrets_dir() / "gh-config"
@@ -374,15 +416,23 @@ def execute_one(row: dict[str, Any]) -> dict[str, Any]:
         else:
             with connect() as conn:
                 _set_state(conn, row["request_id"], "pushing", result)
-        staging = _write_staging(files, holder or "sunnyspot114514")
+        staging = _write_staging(files, holder or copyright_holder_default())
         git_c = [
             "git",
             "-c",
             "core.hooksPath=/dev/null",
             "-c",
-            "user.name=sunnyspot114514",
+            f"user.name={git_author_name()}",
             "-c",
-            "user.email=sunnyspot114514@users.noreply.github.com",
+            f"user.email={git_author_email()}",
+        ]
+        basic = base64.b64encode(f"x-access-token:{token}".encode("ascii")).decode("ascii")
+        env["_AH_REDACT"] = basic
+        push_c = git_c + [
+            "-c",
+            "credential.helper=",
+            "-c",
+            f"http.extraHeader=Authorization: Basic {basic}",
         ]
         for cmd in (
             git_c + ["init", "-b", branch],
@@ -396,8 +446,7 @@ def execute_one(row: dict[str, Any]) -> dict[str, Any]:
                 return {"ok": False, "reason": "git"}
         origin = f"https://github.com/{owner}/{repo}.git"
         _run(git_c + ["remote", "add", "origin", origin], cwd=staging, env=env, timeout=15)
-        _run([gh_bin(), "auth", "setup-git", "--hostname", "github.com"], cwd=staging, env=env, timeout=20)
-        code, out, err = _run(git_c + ["push", "-u", "origin", f"HEAD:refs/heads/{branch}"], cwd=staging, env=env, timeout=90)
+        code, out, err = _run(push_c + ["push", "-u", "origin", f"HEAD:refs/heads/{branch}"], cwd=staging, env=env, timeout=90)
         if code != 0:
             with connect() as conn:
                 _set_state(conn, row["request_id"], "failed", {**result, "reason": "push_failed", "detail": (err or out)[:400]})
