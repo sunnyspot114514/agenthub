@@ -138,11 +138,11 @@ def archive_thread_date(thread_id: str, local_date: str) -> dict[str, Any]:
     ok, reason = verify_archive_file(path, digest, len(ids), set(ids))
     if not ok:
         return {"ok": False, "error": "verify_failed", "reason": reason, "job_key": job_key}
-    from hubv1.store import DATA_DIR, refresh_paths
+    from hubv1.store import data_dir, refresh_paths
 
     refresh_paths()
     try:
-        rel = str(path.resolve().relative_to(DATA_DIR.resolve())).replace("\\", "/")
+        rel = str(path.resolve().relative_to(data_dir().resolve())).replace("\\", "/")
     except Exception:
         rel = f"projections/chat/{thread_id}/{local_date}.md"
     with connect() as conn:

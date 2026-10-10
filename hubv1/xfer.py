@@ -11,13 +11,14 @@ from typing import Any, Optional
 
 from hubv1.archive import import_archive, inspect_archive, is_archive
 from hubv1.flags import flag, flag_int
-from hubv1.store import DATA_DIR, WORKSPACE_MAX_FILE_BYTES, audit, cfg, connect, dumps, loads, new_id, sha256_bytes
+from hubv1.settings import public_host
+from hubv1.store import WORKSPACE_MAX_FILE_BYTES, audit, cfg, connect, data_dir, dumps, loads, new_id, sha256_bytes
 from hubv1.timeutil import now, now_iso
 from hubv1 import workspace as ws
 
 
 def uploads_dir() -> Path:
-    path = DATA_DIR / "uploads"
+    path = data_dir() / "uploads"
     path.mkdir(mode=0o700, exist_ok=True)
     return path
 
@@ -52,7 +53,7 @@ def _hash_ticket(token: str) -> str:
 
 
 def public_put_url(upload_id: str) -> str:
-    host = (os.getenv("AGENTHUB_PUBLIC_HOST") or "agenthub.sunny99.win").strip()
+    host = public_host()
     return f"https://{host}/api/v1/uploads/{upload_id}/content"
 
 
@@ -496,22 +497,107 @@ def file_content(acc, workspace_id: str, path: str):
     return ws.file_disk(node["node_id"])
 
 
-def create_plan(acc, workspace_id: str, *, prefix: str, repo: str, mode: str, visibility: str, license_id: str, copyright_holder: str) -> dict[str, Any]:
+def _norm_rel(path: str) -> str:
+    return (path or "").replace("\\", "/").strip("/")
+
+
+def as_id_list(value: Any) -> list[str]:
+    if value in (None, "", [], ()):
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            try:
+                value = json.loads(text)
+            except Exception:
+                value = [part.strip() for part in text.split(",") if part.strip()]
+        else:
+            value = [part.strip() for part in text.split(",") if part.strip()]
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("file_ids must be a list")
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        fid = str(item).strip()
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        out.append(fid)
+    return out
+
+
+def resolve_publish_root(workspace_id: str, root: str) -> str:
+    root = _norm_rel(root)
+    if not root:
+        return ""
+    node = ws.get_node(root)
+    if node and node.get("workspace_id") == workspace_id and node.get("kind") == "dir" and not node.get("deleted_at"):
+        return _norm_rel(ws.node_relpath(node["node_id"]))
+    return root
+
+
+def strip_publish_root(path: str, root: str) -> str:
+    path = _norm_rel(path)
+    root = _norm_rel(root)
+    if not root:
+        return path
+    if path == root:
+        raise ValueError("publish root is a directory, not a file")
+    prefix = root + "/"
+    if not path.startswith(prefix):
+        raise ValueError("file not under publish root")
+    out = path[len(prefix) :]
+    if not out or out in {".", ".."} or ".." in Path(out).parts:
+        raise ValueError("bad publish path")
+    return out
+
+
+def create_plan(
+    acc,
+    workspace_id: str,
+    *,
+    prefix: str,
+    repo: str,
+    mode: str,
+    visibility: str,
+    license_id: str,
+    copyright_holder: str,
+    file_ids: Any = None,
+    root: str = "",
+) -> dict[str, Any]:
     w = _own_write(acc, workspace_id)
     if mode not in {"create", "update"}:
         raise ValueError("mode")
     if visibility != "public":
         raise ValueError("only public create/update in v1")
+    selected: list[tuple[dict[str, Any], str]] = []
+    ids = as_id_list(file_ids)
+    prefix_n = _norm_rel(prefix)
+    if ids:
+        for fid in ids:
+            node = ws.get_node(fid)
+            if not node or node.get("deleted_at") or node.get("kind") != "file":
+                raise ValueError(f"node not publishable: {fid}")
+            if node["workspace_id"] != workspace_id:
+                raise PermissionError("can only publish files from this workspace")
+            selected.append((node, ws.node_relpath(fid) or node["name"]))
+    elif prefix_n:
+        for it in ws.list_files(workspace_id):
+            p = _norm_rel(it.get("path") or it["name"])
+            if p == prefix_n or p.startswith(prefix_n + "/"):
+                selected.append((it, p))
+    else:
+        raise ValueError("empty selection: pass file_ids or a directory prefix")
+    root_n = resolve_publish_root(workspace_id, root) or (prefix_n if not ids else "")
     files = []
-    for it in ws.list_files(workspace_id):
-        p = it.get("path") or it["name"]
-        if prefix and not (p == prefix or p.startswith(prefix.rstrip("/") + "/")):
-            continue
+    for it, path in selected:
+        published = strip_publish_root(path, root_n) if root_n else _norm_rel(path)
         data, mime, _name = ws.file_payload(it["node_id"])
         files.append(
             {
                 "node_id": it["node_id"],
-                "path": p,
+                "path": published,
+                "source_path": _norm_rel(path),
                 "bytes": len(data),
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "mime": mime,
@@ -529,6 +615,7 @@ def create_plan(acc, workspace_id: str, *, prefix: str, repo: str, mode: str, vi
         "copyright_holder": copyright_holder,
         "workspace_id": workspace_id,
         "workspace_updated_at": w.get("updated_at"),
+        "root": root_n,
     }
     raw = json.dumps(snap, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     mh = hashlib.sha256(raw).hexdigest()
@@ -549,7 +636,8 @@ def create_plan(acc, workspace_id: str, *, prefix: str, repo: str, mode: str, vi
         "license": license_id,
         "copyright_holder": copyright_holder,
         "file_count": len(files),
-        "files": [{"path": f["path"], "bytes": f["bytes"], "sha256": f["sha256"]} for f in files],
+        "root": root_n,
+        "files": [{"path": f["path"], "bytes": f["bytes"], "sha256": f["sha256"], "source_path": f["source_path"]} for f in files],
         "expires_at": exp,
         "note": "request queues only; admin must approve before GitHub write",
     }
@@ -569,7 +657,9 @@ def request_from_plan(acc, *, plan_id: str, manifest_hash: str, request_id: str 
     if "/" not in owner_repo:
         raise ValueError("repo must be owner/name")
     owner, repo = owner_repo.split("/", 1)
-    node_ids = [f["node_id"] for f in snap.get("files") or []]
+    planned = snap.get("files") or []
+    node_ids = [f["node_id"] for f in planned]
+    publish_paths = {f["node_id"]: f.get("path") or "" for f in planned}
     create_repo = plan["mode"] == "create"
     return publisher.create_request(
         acc,
@@ -579,4 +669,5 @@ def request_from_plan(acc, *, plan_id: str, manifest_hash: str, request_id: str 
         branch="main",
         create_repo=create_repo,
         request_id=request_id,
+        publish_paths=publish_paths,
     )

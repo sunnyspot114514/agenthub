@@ -43,14 +43,14 @@ def assets_dir() -> Path:
     return data_dir() / "assets"
 
 
-ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
-CANON_DIR = DATA_DIR / "canonical"
-ATTACH_DIR = DATA_DIR / "attachments"
-BACKUP_DIR = DATA_DIR / "backups"
-PROJ_DIR = DATA_DIR / "projections"
-ASSETS_DIR = DATA_DIR / "assets"
-DB_PATH = DATA_DIR / "hub.db"
+ROOT = root()
+DATA_DIR = data_dir()
+CANON_DIR = canon_dir()
+ATTACH_DIR = attach_dir()
+BACKUP_DIR = backup_dir()
+PROJ_DIR = proj_dir()
+ASSETS_DIR = assets_dir()
+DB_PATH = db_path()
 SCHEMA_VERSION = 17
 WORKSPACE_QUOTA_BYTES = 50 * 1024 * 1024 * 1024
 WORKSPACE_MAX_FILE_BYTES = 200 * 1024 * 1024
@@ -73,6 +73,7 @@ DEFAULTS = {
     "feature_oauth": "1",
     "feature_mcp_write": "1",
     "feature_binary_bridge": "1",
+    "feature_github_read": "1",
     "workspace_quota_bytes": str(WORKSPACE_QUOTA_BYTES),
     "workspace_quota_bytes_test": str(WORKSPACE_QUOTA_BYTES),
     "workspace_max_nodes": "400",

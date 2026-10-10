@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hubv1.store import (
-    ASSETS_DIR,
+    assets_dir,
     cfg_int,
     connect,
     dumps,
@@ -33,7 +33,7 @@ def put_asset(data: bytes) -> str:
         raise ValueError("empty file")
     ensure_dirs()
     digest = sha256_bytes(data)
-    dest = ASSETS_DIR / digest
+    dest = assets_dir() / digest
     if dest.is_file():
         return digest
     tmp = dest.with_name(digest + ".tmp")
@@ -49,11 +49,11 @@ def put_asset(data: bytes) -> str:
 def read_asset(digest: str) -> Optional[bytes]:
     if not HASH_RE.fullmatch(digest or ""):
         return None
-    path = ASSETS_DIR / digest
+    path = assets_dir() / digest
     if not path.is_file():
         return None
     try:
-        if path.resolve().parent != ASSETS_DIR.resolve():
+        if path.resolve().parent != assets_dir().resolve():
             return None
     except Exception:
         return None

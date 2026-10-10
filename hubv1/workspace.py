@@ -10,12 +10,12 @@ from typing import Any, Iterable, Optional
 from hubv1.flags import flag, flag_int
 from hubv1.version import APP_VERSION
 from hubv1.store import (
-    DATA_DIR,
     WORKSPACE_MAX_FILE_BYTES,
     WORKSPACE_QUOTA_BYTES,
     audit,
     cfg_int,
     connect,
+    data_dir,
     dumps,
     ensure_dirs,
     new_id,
@@ -30,7 +30,7 @@ UNSAFE = re.compile(r"[\x00-\x1f\\/]|[.]{2}")
 
 def wsblobs_dir() -> Path:
     ensure_dirs()
-    path = DATA_DIR / "wsblobs"
+    path = data_dir() / "wsblobs"
     path.mkdir(mode=0o700, exist_ok=True)
     return path
 
@@ -777,6 +777,7 @@ def capabilities(acc) -> dict[str, Any]:
             "orangepi_config",
             "approve_own_publish",
             "vendor_scheduled_wake",
+            "github_write",
         ],
         "agent_wake": False,
         "independent_backup": flag("feature_independent_backup"),
@@ -801,11 +802,13 @@ def capabilities(acc) -> dict[str, Any]:
             "mcp_write_text": flag("feature_mcp_write"),
             "publish_request": pub_req and flag("feature_publisher"),
             "publish_approve": acc.manage,
+            "github_read": bool(flag("feature_github_read") and acc.is_authed_reader()),
         },
         "links": {
             "context": "/api/v1/context",
             "jobs": "/api/v1/jobs/{id}",
             "me": "/api/v1/me",
+            "github_repos": "/api/v1/github/repos",
         },
         "idempotency_ttl_seconds": flag_int("idempotency_ttl_seconds", 604800),
     }
