@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -170,6 +171,7 @@ def cmd_publish(args) -> int:
     if args.action == "plan":
         body = {
             "prefix": args.prefix,
+            "root": args.root,
             "repo": args.repo,
             "mode": args.mode,
             "visibility": args.visibility,
@@ -255,11 +257,12 @@ def build_parser() -> argparse.ArgumentParser:
     pub_sub = pub.add_subparsers(dest="action", required=True)
     plan = pub_sub.add_parser("plan")
     plan.add_argument("--from", dest="prefix", default="")
+    plan.add_argument("--root", default="", help="workspace directory that becomes the GitHub repo root")
     plan.add_argument("--repo", required=True)
     plan.add_argument("--mode", default="create")
     plan.add_argument("--visibility", default="public")
     plan.add_argument("--license", default="MIT")
-    plan.add_argument("--copyright-holder", default="sunnyspot114514")
+    plan.add_argument("--copyright-holder", default=os.getenv("AGENTHUB_COPYRIGHT_HOLDER") or "sunnyspot114514")
     plan.add_argument("--out", default="")
     plan.set_defaults(func=cmd_publish)
     req = pub_sub.add_parser("request")

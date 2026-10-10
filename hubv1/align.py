@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from hubv1 import timeutil
 from hubv1.acl import Access, access_for, grant_acl_version, load_grant
+from hubv1.settings import timezone_name
 from hubv1.store import cfg, cfg_int, connect, dumps, sha256_text
 
 EMPTY_08 = "暂无工作摘要"
@@ -102,7 +103,7 @@ def build_digest(recipient: Access, work_date: str, hour: int, entries: list[dic
 
     content = {
         "slot_kind": f"{hour:02d}:00",
-        "timezone": "Asia/Shanghai",
+        "timezone": timezone_name(),
         "work_date": work_date,
         "range": f"{work_date} {'00:00-08:00' if hour == 8 else '08:00-20:00'} +08:00",
         "projects": projects,

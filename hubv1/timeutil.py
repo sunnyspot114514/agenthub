@@ -4,7 +4,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
-TZ = ZoneInfo("Asia/Shanghai")
+from hubv1.settings import timezone_name, tz as configured_tz
+
+def tz() -> ZoneInfo:
+    return configured_tz()
+
+
+TZ = ZoneInfo(timezone_name())
 UTC = timezone.utc
 
 _override: Optional[datetime] = None
@@ -17,8 +23,8 @@ def set_override(dt: Optional[datetime]) -> None:
         _override = None
         return
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=TZ)
-    _override = dt.astimezone(TZ)
+        dt = dt.replace(tzinfo=tz())
+    _override = dt.astimezone(tz())
 
 
 def set_clock_error(flag: bool) -> None:
@@ -45,7 +51,7 @@ def now() -> datetime:
         raise RuntimeError("clock_error")
     if _override is not None:
         return _override
-    return datetime.now(TZ)
+    return datetime.now(tz())
 
 
 def now_utc() -> datetime:
@@ -57,7 +63,7 @@ def now_iso() -> str:
 
 
 def shanghai_date(dt: Optional[datetime] = None) -> str:
-    return (dt or now()).astimezone(TZ).date().isoformat()
+    return (dt or now()).astimezone(tz()).date().isoformat()
 
 
 def parse_iso(value: str) -> datetime:
@@ -73,12 +79,12 @@ def slot_id(work_date: str, hour: int) -> str:
 
 def slot_cutoff(work_date: str, hour: int) -> datetime:
     y, m, d = (int(x) for x in work_date.split("-"))
-    return datetime(y, m, d, hour, 0, 0, tzinfo=TZ)
+    return datetime(y, m, d, hour, 0, 0, tzinfo=tz())
 
 
 def due_slots(at: Optional[datetime] = None) -> list[tuple[str, int]]:
     """Slots whose cutoff has already passed (today and yesterday). Future slots are omitted."""
-    at = (at or now()).astimezone(TZ)
+    at = (at or now()).astimezone(tz())
     out: list[tuple[str, int]] = []
     for back in (1, 0):
         day = (at.date() - timedelta(days=back)).isoformat()
@@ -107,7 +113,7 @@ def shanghai_day_bounds(day: str) -> tuple[str, str]:
 
 
 def parse_test_clock(value: str) -> datetime:
-    return parse_iso(value).astimezone(TZ)
+    return parse_iso(value).astimezone(tz())
 
 
 def add(dt: datetime, **kwargs) -> datetime:

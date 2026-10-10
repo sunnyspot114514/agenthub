@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import urlparse
 
+from hubv1.settings import public_host
 from hubv1.store import connect, dumps, loads, new_id
 from hubv1.timeutil import now_iso, now_utc
 from hubv1.flags import flag, flag_int
@@ -62,7 +63,7 @@ def enabled() -> bool:
 
 
 def issuer() -> str:
-    host = ( __import__("os").getenv("AGENTHUB_PUBLIC_HOST") or "agenthub.sunny99.win").strip()
+    host = public_host()
     return f"https://{host}"
 
 

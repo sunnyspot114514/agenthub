@@ -6,8 +6,9 @@ from datetime import timedelta
 from typing import Any, Optional
 
 from hubv1 import timeutil
+from hubv1.settings import timezone_name
 from hubv1.events import append_event
-from hubv1.store import PROJ_DIR, dumps, ensure_dirs, new_id, sha256_bytes, sha256_text
+from hubv1.store import dumps, ensure_dirs, new_id, proj_dir, sha256_bytes, sha256_text
 
 
 def live_dates(at=None) -> list[str]:
@@ -22,7 +23,7 @@ def local_date_of(created_at: str) -> str:
 
 def archive_path(thread_id: str, local_date: str):
     ensure_dirs()
-    folder = PROJ_DIR / "chat" / thread_id
+    folder = proj_dir() / "chat" / thread_id
     folder.mkdir(parents=True, mode=0o700, exist_ok=True)
     return folder / f"{local_date}.md"
 
@@ -39,7 +40,7 @@ def serialize_message(row) -> dict[str, Any]:
 def render_archive_md(thread_id: str, local_date: str, archive_id: str, rows: list[dict[str, Any]]) -> str:
     lines = [
         f"# chat archive {thread_id} {local_date}",
-        f"timezone: Asia/Shanghai",
+        f"timezone: {timezone_name()}",
         f"archive_id: {archive_id}",
         f"schema_version: 12",
         f"count: {len(rows)}",

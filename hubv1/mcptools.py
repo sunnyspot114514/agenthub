@@ -12,11 +12,14 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from hubv1.acl import access_for
 from hubv1.chat import live_dates, serialize_message
 from hubv1.flags import flag, flag_int
+from hubv1.settings import copyright_holder_default, timezone_name
 from hubv1.store import connect, sha256_bytes
+from hubv1.version import APP_VERSION
 from hubv1 import timeutil
 from hubv1 import workspace as ws
 from hubv1 import xfer
 from hubv1 import publisher
+from hubv1 import github_read
 
 WRITE_TEXT_MAX = 64 * 1024
 CONTEXT_MAX = 16 * 1024
@@ -113,6 +116,7 @@ def mcp_surface(p) -> dict[str, Any]:
     return {
         "mcp": "restricted" if writes else "read-only",
         "mcp_writes": writes,
+        "github_read": bool(github_read.enabled() and acc.is_authed_reader()),
     }
 
 
@@ -157,7 +161,7 @@ def hub_get_context(p, *, section: str = "index", cursor: str = "", limit: int =
             "mcp_write": flag("feature_mcp_write"),
         },
         "files": files,
-        "timezone": "Asia/Shanghai",
+        "timezone": timezone_name(),
         "work_date": timeutil.shanghai_date(),
         "truncated": truncated,
         "cursor": next_c,
@@ -380,7 +384,7 @@ def _fetch_host_file(url: str) -> bytes:
             return HTTPRedirectHandler.redirect_request(self, req, fp, code, msg, headers, newurl)
 
     opener = build_opener(_Redirect)
-    req = Request(url, method="GET", headers={"User-Agent": "Agenthub-Xfer/1.4.5", "Accept": "*/*"})
+    req = Request(url, method="GET", headers={"User-Agent": f"Agenthub-Xfer/{APP_VERSION}", "Accept": "*/*"})
     try:
         with opener.open(req, timeout=60) as resp:  # nosec B310 - host allowlist + private-IP guard
             raw = resp.read(max_file + 1)
@@ -644,7 +648,15 @@ def chat_send(p, *, channel: str, text: str, idempotency_key: str = "") -> dict[
     return out
 
 
-def publish_prepare(p, *, file_ids: list[str], repo: str, visibility: str = "public", license_id: str = "MIT") -> dict[str, Any]:
+def publish_prepare(
+    p,
+    *,
+    file_ids: list[str],
+    repo: str,
+    visibility: str = "public",
+    license_id: str = "MIT",
+    root: str = "",
+) -> dict[str, Any]:
     acc = _acc(p)
     if not acc.has_scope("publish:request"):
         raise ToolFail("forbidden", "publish:request required")
@@ -653,27 +665,29 @@ def publish_prepare(p, *, file_ids: list[str], repo: str, visibility: str = "pub
     with connect() as conn:
         from hubv1.store import cfg
 
-        holder = cfg(conn, "mit_copyright_holder") or "sunnyspot114514"
+        holder = cfg(conn, "mit_copyright_holder") or copyright_holder_default()
     if "/" not in repo:
         raise ToolFail("invalid", "repo owner/name")
-    # freeze via xfer.create_plan using prefix of first file path if possible
-    files = []
-    for fid in file_ids:
-        node = ws.get_node(fid)
-        if not node or node["workspace_id"] != mine["workspace_id"]:
-            raise ToolFail("forbidden")
-        files.append(node)
-    prefix = ""
-    return xfer.create_plan(
-        acc,
-        mine["workspace_id"],
-        prefix=prefix,
-        repo=repo,
-        mode="create",
-        visibility=visibility,
-        license_id=license_id,
-        copyright_holder=holder,
-    )
+    ids = xfer.as_id_list(file_ids)
+    if not ids:
+        raise ToolFail("invalid", "file_ids required; publish_prepare does not default to the whole workspace")
+    try:
+        return xfer.create_plan(
+            acc,
+            mine["workspace_id"],
+            prefix="",
+            repo=repo,
+            mode="create",
+            visibility=visibility,
+            license_id=license_id,
+            copyright_holder=holder,
+            file_ids=ids,
+            root=root or "",
+        )
+    except PermissionError:
+        raise ToolFail("forbidden")
+    except ValueError as exc:
+        raise ToolFail("invalid", str(exc)[:200]) from exc
 
 
 def publish_request(p, *, plan_id: str, manifest_hash: str, idempotency_key: str = "") -> dict[str, Any]:
@@ -705,6 +719,36 @@ def publish_status(p, *, request_id: str) -> dict[str, Any]:
     rec.pop("source_json", None)
     rec.pop("result_json", None)
     return rec
+
+
+def _github_call(p, fn, **kwargs):
+    acc = _acc(p)
+    _need_read(acc)
+    try:
+        return fn(acc, **kwargs)
+    except PermissionError:
+        raise ToolFail("forbidden")
+    except KeyError:
+        raise ToolFail("not_found")
+    except ValueError as exc:
+        raise ToolFail("invalid", str(exc)[:200]) from exc
+    except RuntimeError as exc:
+        msg = str(exc)
+        if msg == "unavailable":
+            raise ToolFail("unavailable", "github_read disabled") from exc
+        raise ToolFail("unavailable", "github unavailable") from exc
+
+
+def github_list_repos(p, *, owner: str = "", limit: int = 40) -> dict[str, Any]:
+    return _github_call(p, github_read.list_repos, owner=owner, limit=limit)
+
+
+def github_list_files(p, *, repo: str, ref: str = "", prefix: str = "", limit: int = 50) -> dict[str, Any]:
+    return _github_call(p, github_read.list_files, repo=repo, ref=ref, prefix=prefix, limit=limit)
+
+
+def github_read_file(p, *, repo: str, path: str, ref: str = "", max_bytes: int = 16384) -> dict[str, Any]:
+    return _github_call(p, github_read.read_file, repo=repo, path=path, ref=ref, max_bytes=max_bytes)
 
 
 def _replay(prev) -> dict[str, Any]:
@@ -790,9 +834,15 @@ def register(mcp, mcp_require) -> None:
         return _call(chat_send, channel=channel, text=text, idempotency_key=idempotency_key)
 
     @_tool("publish_prepare")
-    def _t_pp(file_ids: list[str], repo: str, visibility: str = "public", license_id: str = "MIT") -> dict[str, Any]:
-        """Freeze a public-publish plan. Does not approve or push."""
-        return _call(publish_prepare, file_ids=file_ids, repo=repo, visibility=visibility, license_id=license_id)
+    def _t_pp(
+        file_ids: list[str],
+        repo: str,
+        visibility: str = "public",
+        license_id: str = "MIT",
+        root: str = "",
+    ) -> dict[str, Any]:
+        """Freeze a public-publish plan from exactly these file_ids. Optional root is the workspace directory that becomes the GitHub repo root (README.md should sit there). Does not approve or push."""
+        return _call(publish_prepare, file_ids=file_ids, repo=repo, visibility=visibility, license_id=license_id, root=root)
 
     @_tool("publish_request")
     def _t_prq(plan_id: str, manifest_hash: str, idempotency_key: str = "") -> dict[str, Any]:
@@ -803,3 +853,18 @@ def register(mcp, mcp_require) -> None:
     def _t_ps(request_id: str) -> dict[str, Any]:
         """Read the caller's own publish request state."""
         return _call(publish_status, request_id=request_id)
+
+    @_tool("github_list_repos")
+    def _t_glr(owner: str = "", limit: int = 40) -> dict[str, Any]:
+        """List GitHub repositories for the hub allowlisted owner. Read-only. Token stays on the hub."""
+        return _call(github_list_repos, owner=owner, limit=limit)
+
+    @_tool("github_list_files")
+    def _t_glf(repo: str, ref: str = "", prefix: str = "", limit: int = 50) -> dict[str, Any]:
+        """List files in an allowlisted GitHub repo (owner/name). Read-only."""
+        return _call(github_list_files, repo=repo, ref=ref, prefix=prefix, limit=limit)
+
+    @_tool("github_read_file")
+    def _t_grf(repo: str, path: str, ref: str = "", max_bytes: int = 16384) -> dict[str, Any]:
+        """Read one text file from an allowlisted GitHub repo. Max 64 KiB. Does not fetch arbitrary URLs."""
+        return _call(github_read_file, repo=repo, path=path, ref=ref, max_bytes=max_bytes)

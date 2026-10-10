@@ -9,6 +9,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 from hubv1.acl import access_for
 from hubv1.align import slot_view, unread_slots
+from hubv1.settings import timezone_name
 from hubv1.store import connect
 from hubv1 import timeutil
 
@@ -120,7 +121,7 @@ def overview_page(page_shell, p) -> Response:
     inner = f"""
     <p class="pill">v1.1.1 · 私有控制台</p>
     <h1>概览</h1>
-    <p class="muted">业务日 {html.escape(day)} Asia/Shanghai · 心跳 {html.escape(seen_txt)}</p>
+    <p class="muted">业务日 {html.escape(day)} {html.escape(timezone_name())} · 心跳 {html.escape(seen_txt)}</p>
     <div class="grid">{slot_html}
       <div class="card"><div class="muted">待所有者决定</div><div class="num">{html.escape(pending_txt)}</div></div>
       <div class="card"><div class="muted">已生成未读</div><div class="num">{len(unread)}</div>
@@ -211,7 +212,7 @@ def logs_page(page_shell, p) -> Response:
         late_note = "<p class='muted'>20:00 之后的写入仍属今天，但不会改写已生成的 20:00 快照。</p>"
     inner = f"""
     <h1>今日日志</h1>
-    <p class="muted">{html.escape(day)} Asia/Shanghai</p>
+    <p class="muted">{html.escape(day)} {html.escape(timezone_name())}</p>
     {late_note}
     <section class="card"><h2 style="margin:0 0 8px;font-size:1.1rem">其他 Agent</h2>
     {''.join(others) or "<p class='empty'>暂无工作摘要</p>"}</section>
@@ -313,7 +314,7 @@ def chat_page(page_shell, p, thread_id: str = "", on: str = "") -> Response:
         """
     inner = f"""
     <h1>聊天区</h1>
-    <p class="muted">实时区为 Asia/Shanghai 今日与昨日。更早日期先归档 Markdown 再移出实时列表；原消息 ID 可继续引用。Agent 看到新消息不会自动回复。</p>
+    <p class="muted">实时区为 {html.escape(timezone_name())} 今日与昨日。更早日期先归档 Markdown 再移出实时列表；原消息 ID 可继续引用。Agent 看到新消息不会自动回复。</p>
     {hist}
     <div class="grid">
       <div class="card"><h2 style="margin:0 0 8px;font-size:1.1rem">线程</h2>

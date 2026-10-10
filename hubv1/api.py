@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
 from hubv1 import timeutil
+from hubv1.settings import timezone_name
 from hubv1.acl import PRIVATE_VIS, Access, access_for, project_acl, upsert_grant
 from hubv1.align import (
     ensure_snapshot,
@@ -24,8 +25,7 @@ from hubv1.chat import archive_path, live_dates, serialize_message
 from hubv1.events import append_event
 from hubv1.version import APP_VERSION
 from hubv1.store import (
-    CANON_DIR,
-    ATTACH_DIR,
+    attach_dir,
     audit,
     backup_now,
     cfg,
@@ -493,7 +493,7 @@ def get_context(
         )
     pack["own_workspace_files"] = own_files
     pack["truncated"] = bool(own_files.get("truncated"))
-    pack["timezone"] = "Asia/Shanghai"
+    pack["timezone"] = timezone_name()
     pack["local_date"] = timeutil.shanghai_date()
     text = dumps(pack)
     omitted = 0
@@ -1014,7 +1014,7 @@ def list_worklogs(request: Request, acc: Access, day: str, actor: Optional[str])
         d["summary"] = acc.filter_summary(d["summary"], src)
         if d["summary"]:
             others.append(d)
-    return envelope(request, {"work_date": day, "timezone": "Asia/Shanghai", "others": others, "mine": mine})
+    return envelope(request, {"work_date": day, "timezone": timezone_name(), "others": others, "mine": mine})
 
 
 @router.get("/alignments/{slot_id}")
@@ -1051,7 +1051,7 @@ def get_alignment(slot_id: str, request: Request, acc: Access = Depends(require_
 
 
 def render_align_md(slot_id: str, live: dict[str, Any]) -> str:
-    lines = [f"# {slot_id}  Asia/Shanghai", f"来源范围：固定截止前已接收日志", ""]
+    lines = [f"# {slot_id}  {timezone_name()}", f"来源范围：固定截止前已接收日志", ""]
     if live.get("empty_reason"):
         lines.append(live["empty_reason"])
     for proj in live.get("projects") or []:
@@ -1361,7 +1361,7 @@ def list_briefings(
     except Exception:
         hours = [8, 20]
     items = [slot_view(acc.p.id, day, h, acc.p) for h in hours]
-    return envelope(request, {"items": items, "work_date": day, "timezone": "Asia/Shanghai"})
+    return envelope(request, {"items": items, "work_date": day, "timezone": timezone_name()})
 
 
 @router.get("/search")
@@ -1604,7 +1604,7 @@ def get_attachment(attachment_id: str, request: Request, download: int = 0, acc:
     meta = {k: row[k] for k in row.keys() if k != "storage_ref"}
     if not download:
         return envelope(request, meta)
-    path = ATTACH_DIR / row["storage_ref"]
+    path = attach_dir() / row["storage_ref"]
     if not path.is_file():
         raise HTTPException(status_code=404, detail="missing bytes")
     data = path.read_bytes()
@@ -1734,7 +1734,7 @@ def get_index(request: Request, acc: Access = Depends(require_api("view"))):
     due = [timeutil.slot_id(d, h) for d, h in timeutil.due_slots()]
     unread = unread_slots(acc.p.id)
     data = {
-        "timezone": "Asia/Shanghai",
+        "timezone": timezone_name(),
         "work_date": day,
         "collab_profile": "/api/v1/profiles/collab",
         "public_profile": "/api/v1/profiles/public",
@@ -1759,7 +1759,7 @@ def get_index(request: Request, acc: Access = Depends(require_api("view"))):
         "mcp": "read-only tools; not evidence of write or scheduling",
     }
     if "text/markdown" in (request.headers.get("accept") or "").lower():
-        lines = ["# Agenthub 接入索引", f"日期 {day} Asia/Shanghai", ""]
+        lines = ["# Agenthub 接入索引", f"日期 {day} {timezone_name()}", ""]
         lines.append(f"- 协作资料: GET {data['collab_profile']}")
         lines.append(f"- 共享项目: GET {data['projects']}")
         lines.append(f"- 今日日志: GET {data['today_logs']}")

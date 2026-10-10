@@ -13,6 +13,7 @@ from urllib.parse import quote
 from hubv1.acl import Access
 from hubv1.version import APP_VERSION
 from hubv1.flags import flag_int
+from hubv1.settings import copyright_holder_default
 from hubv1.store import WORKSPACE_MAX_FILE_BYTES, connect
 from hubv1 import workspace as ws
 from hubv1 import xfer
@@ -48,11 +49,13 @@ class ImportIn(BaseModel):
 
 class PlanIn(BaseModel):
     prefix: str = ""
+    file_ids: list[str] = Field(default_factory=list)
+    root: str = ""
     repo: str = Field(min_length=3, max_length=120)
     mode: str = "create"
     visibility: str = "public"
     license: str = "MIT"
-    copyright_holder: str = "sunnyspot114514"
+    copyright_holder: str = Field(default_factory=copyright_holder_default)
     workspace_id: str = ""
 
 
@@ -78,6 +81,8 @@ def _http(request: Request, exc: Exception) -> JSONResponse:
         return _err(request, 409, "exists", str(exc) or "exists")
     if isinstance(exc, RuntimeError) and str(exc) == "conflict":
         return _err(request, 412, "conflict", "etag or revision conflict")
+    if isinstance(exc, RuntimeError) and str(exc) in {"unavailable", "github unavailable"}:
+        return _err(request, 503, "unavailable", str(exc)[:300], retryable=True)
     if isinstance(exc, OverflowError):
         return _err(request, 413, "too_large", str(exc) or "too large")
     if isinstance(exc, MemoryError):
@@ -273,6 +278,8 @@ def attach(router, shared_router, *, require_api, envelope):
                 visibility=body.visibility,
                 license_id=body.license,
                 copyright_holder=body.copyright_holder,
+                file_ids=body.file_ids,
+                root=body.root,
             )
         except Exception as exc:
             return _http(request, exc)
@@ -318,6 +325,50 @@ def attach(router, shared_router, *, require_api, envelope):
             return _err(request, 404, "not_found", "not found")
         return envelope(request, row)
 
+    @router.get("/github/repos")
+    def github_repos(request: Request, owner: str = "", limit: int = 40, acc: Access = Depends(require_api("view"))):
+        from hubv1 import github_read
+
+        try:
+            info = github_read.list_repos(acc, owner=owner, limit=limit)
+        except Exception as orig:
+            return _http(request, orig)
+        return envelope(request, info)
+
+    @router.get("/github/files")
+    def github_files(
+        request: Request,
+        repo: str,
+        ref: str = "",
+        prefix: str = "",
+        limit: int = 50,
+        acc: Access = Depends(require_api("view")),
+    ):
+        from hubv1 import github_read
+
+        try:
+            info = github_read.list_files(acc, repo=repo, ref=ref, prefix=prefix, limit=limit)
+        except Exception as orig:
+            return _http(request, orig)
+        return envelope(request, info)
+
+    @router.get("/github/contents")
+    def github_contents(
+        request: Request,
+        repo: str,
+        path: str,
+        ref: str = "",
+        max_bytes: int = 16384,
+        acc: Access = Depends(require_api("view")),
+    ):
+        from hubv1 import github_read
+
+        try:
+            info = github_read.read_file(acc, repo=repo, path=path, ref=ref, max_bytes=max_bytes)
+        except Exception as orig:
+            return _http(request, orig)
+        return envelope(request, info)
+
     shared_router.add_api_route("/health", api_health, methods=["GET"])
     shared_router.add_api_route("/me", api_me, methods=["GET"])
     shared_router.add_api_route("/uploads", post_upload, methods=["POST"])
@@ -326,3 +377,6 @@ def attach(router, shared_router, *, require_api, envelope):
     shared_router.add_api_route("/publish/plans", post_plan, methods=["POST"])
     shared_router.add_api_route("/publish/requests", post_plan_request, methods=["POST"])
     shared_router.add_api_route("/publish/requests/{request_id}", get_plan_request, methods=["GET"])
+    shared_router.add_api_route("/github/repos", github_repos, methods=["GET"])
+    shared_router.add_api_route("/github/files", github_files, methods=["GET"])
+    shared_router.add_api_route("/github/contents", github_contents, methods=["GET"])
