@@ -7,14 +7,15 @@ MCP clients use opaque Bearer access tokens only.
 from __future__ import annotations
 
 import html
+import http.client
 import ipaddress
 import json
 import os
 import re
 import socket
+import ssl
 from typing import Any, Optional
 from urllib.parse import urlencode, urlparse, urlunparse
-from urllib.request import Request, urlopen
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -22,6 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from hubv1 import oauth_store as store
 from hubv1.acl import access_for
 from hubv1.flags import flag
+from hubv1.settings import public_host
 
 router = APIRouter()
 SCOPE_HELP = {
@@ -91,7 +93,7 @@ def oauth_error(status: int, error: str, desc: str = "") -> JSONResponse:
 
 def host_allowed(request: Request) -> bool:
     host = (request.headers.get("host") or "").split(":")[0].lower()
-    expected = (os.getenv("AGENTHUB_PUBLIC_HOST") or "agenthub.sunny99.win").split(":")[0].lower()
+    expected = public_host().split(":")[0].lower()
     if host in {"localhost", "127.0.0.1", "testserver", expected}:
         return True
     return False
@@ -116,19 +118,84 @@ def _private_host(hostname: str) -> bool:
     return False
 
 
+def _ip_blocked(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except Exception:
+        return True
+    return bool(
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def _public_connect_ip(hostname: str, port: int) -> str:
+    host = (hostname or "").lower().strip("[]")
+    if not host or host in {"localhost", "metadata.google.internal"}:
+        raise ValueError("cimd private host")
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except Exception as exc:
+        raise ValueError("cimd private host") from exc
+    chosen = ""
+    for info in infos:
+        ip = info[4][0]
+        if _ip_blocked(ip):
+            raise ValueError("cimd private host")
+        if not chosen:
+            chosen = ip
+    if not chosen:
+        raise ValueError("cimd private host")
+    return chosen
+
+
+def _cimd_get(hostname: str, port: int, ip: str, path: str, headers: dict[str, str]) -> tuple[int, bytes]:
+    context = ssl.create_default_context()
+    sock = socket.create_connection((ip, port), timeout=3)
+    try:
+        ssock = context.wrap_socket(sock, server_hostname=hostname)
+        conn = http.client.HTTPSConnection(hostname, port, timeout=3, context=context)
+        conn.sock = ssock
+        conn.request("GET", path, headers=headers)
+        resp = conn.getresponse()
+        status = resp.status
+        raw = resp.read(65_536 + 1)
+        conn.close()
+        return status, raw
+    except Exception:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        raise
+
+
 def fetch_cimd(url: str) -> dict[str, Any]:
     parsed = urlparse(url)
     if parsed.scheme != "https":
         raise ValueError("cimd https only")
     if parsed.username or parsed.password:
         raise ValueError("cimd credentials")
-    if _private_host(parsed.hostname or ""):
-        raise ValueError("cimd private host")
-    req = Request(url, method="GET", headers={"Accept": "application/json", "User-Agent": "Agenthub-OAuth/1.4"})
-    with urlopen(req, timeout=3) as resp:  # nosec B310 - SSRF guards above
-        if resp.status != 200:
-            raise ValueError("cimd status")
-        raw = resp.read(65_536 + 1)
+    hostname = parsed.hostname or ""
+    port = parsed.port or 443
+    ip = _public_connect_ip(hostname, port)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Agenthub-OAuth/1.4",
+        "Host": hostname,
+    }
+    status, raw = _cimd_get(hostname, port, ip, path, headers)
+    if 300 <= status < 400:
+        raise ValueError("cimd redirect")
+    if status != 200:
+        raise ValueError("cimd status")
     if len(raw) > 65_536:
         raise ValueError("cimd too large")
     data = json.loads(raw.decode("utf-8"))

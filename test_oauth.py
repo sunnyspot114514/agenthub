@@ -19,10 +19,13 @@ os.environ["AGENTHUB_API_TOKEN"] = "test-admin-token-xxxxxxxx"
 os.environ["AGENTHUB_SESSION_SECRET"] = "test-session-secret-32-bytes-long"
 os.environ["AGENTHUB_PUBLIC_HOST"] = "agenthub.example.test"
 
+from unittest.mock import patch  # noqa: E402
+
 from fastapi.testclient import TestClient  # noqa: E402
 
 import app as hub  # noqa: E402
 from hubv1 import mcptools  # noqa: E402
+from hubv1 import oauth  # noqa: E402
 from hubv1.acl import access_for  # noqa: E402
 from hubv1.oauth_store import pkce_s256  # noqa: E402
 from hubv1.store import connect, refresh_paths  # noqa: E402
@@ -354,6 +357,23 @@ class OAuthTests(unittest.TestCase):
                 blob += p.read_text(encoding="utf-8")
         for bad in ("oha_", "ohr_", "ghp_", "Authorization", "AGENTHUB_API_TOKEN"):
             self.assertNotIn(bad, blob)
+
+    def test_cimd_rejects_redirect_and_private_ip(self):
+        url = "https://client.example/.well-known/oauth-client"
+        fake_addr = [
+            (0, 0, 0, "", ("93.184.216.34", 443)),
+        ]
+        with patch("hubv1.oauth.socket.getaddrinfo", return_value=fake_addr):
+            with patch("hubv1.oauth._cimd_get", return_value=(302, b"{}")) as getter:
+                with self.assertRaises(ValueError) as ctx:
+                    oauth.fetch_cimd(url)
+                self.assertIn("redirect", str(ctx.exception))
+                self.assertEqual(getter.call_args.args[2], "93.184.216.34")
+        private_addr = [(0, 0, 0, "", ("127.0.0.1", 443))]
+        with patch("hubv1.oauth.socket.getaddrinfo", return_value=private_addr):
+            with self.assertRaises(ValueError) as ctx:
+                oauth.fetch_cimd(url)
+            self.assertIn("private", str(ctx.exception))
 
 
 if __name__ == "__main__":
