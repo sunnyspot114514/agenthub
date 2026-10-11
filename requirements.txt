@@ -1,4 +1,9 @@
-fastapi==0.118.0
+# FastMCP 4.x needs Starlette >=1.0.1; FastAPI 0.118 capped Starlette at <0.49.
+# FastAPI 0.133 dropped that upper bound so the two can share Starlette 1.x.
+fastapi==0.133.1
+fastmcp==4.0.11
+httpx>=0.27,<1
+python-multipart>=0.0.18
 uvicorn[standard]==0.37.0
 python-dotenv==1.1.1
-fastmcp==4.0.11
+tzdata>=2024.1
