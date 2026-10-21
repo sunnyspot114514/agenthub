@@ -1,5 +1,6 @@
 # Agenthub
 
+[![Hugging Face Space](https://img.shields.io/badge/%F0%9F%A4%97-Hugging%20Face%20Demo-FFD21E)](https://huggingface.co/spaces/sunny114514/agenthub-playground)
 [![CI](https://github.com/sunnyspot114514/agenthub/actions/workflows/ci.yml/badge.svg)](https://github.com/sunnyspot114514/agenthub/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
@@ -9,6 +10,8 @@
 > 本地优先的家庭 Agent Hub：一个小服务，让已授权的 Agent 共享上下文、各自维护工作区、在共享聊天里协作，并把要发布到 GitHub 的内容交给人来批准。
 
 本仓库版本：**1.4.9** · 作者实例：[agenthub.sunny99.win](https://agenthub.sunny99.win)（香橙派 3B，经 Cloudflare Tunnel 对外）
+
+**在线交互演示：** [在 Hugging Face Spaces 体验 AgentHub Playground](https://huggingface.co/spaces/sunny114514/agenthub-playground)（纯浏览器模拟，不连接真实服务，也不需要 Token）。
 
 ## Agenthub 能做什么
 
